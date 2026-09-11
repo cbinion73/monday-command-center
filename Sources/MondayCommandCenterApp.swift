@@ -896,12 +896,11 @@ private struct VaultTomeRoom: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.10, green: 0.065, blue: 0.040), Color(red: 0.035, green: 0.026, blue: 0.018)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+            TomePalette.background.ignoresSafeArea()
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 14) {
-                    Label(title.uppercased(), systemImage: "book.closed.fill").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.2).foregroundStyle(Color(red: 0.91, green: 0.71, blue: 0.40))
+                    Label(title.uppercased(), systemImage: "book.closed.fill").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.2).foregroundStyle(TomePalette.accent)
                     Text(subtitle).font(.system(size: 13)).foregroundStyle(.white.opacity(0.56)).fixedSize(horizontal: false, vertical: true)
-                    Divider().overlay(.white.opacity(0.14))
                     if entries.isEmpty {
                         Text(emptyTitle).font(.system(size: 13)).foregroundStyle(.white.opacity(0.55))
                     } else {
@@ -910,14 +909,14 @@ private struct VaultTomeRoom: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(entry.title).lineLimit(2).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(selected?.id == entry.id ? 0.96 : 0.70))
                                     Text(entry.modified.formatted(date: .abbreviated, time: .omitted)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.42))
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(selected?.id == entry.id ? Color.white.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 9))
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(selected?.id == entry.id ? TomePalette.accent.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 9))
                             }.buttonStyle(.plain)
                         } } }
                     }
                     Spacer()
                     Text("Read-only from MONDAY Vault").font(.system(size: 10)).foregroundStyle(.white.opacity(0.34))
                 }
-                .frame(width: 276).padding(22).background(.black.opacity(0.20))
+                .frame(width: 276).padding(22).background(TomePalette.sidebar)
                 TomePage(entry: selected, emptyTitle: emptyTitle)
             }
         }
@@ -932,18 +931,16 @@ private struct TomePage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let entry {
-                    Text(entry.title).font(.system(size: 31, weight: .semibold, design: .serif)).foregroundStyle(Color(red: 0.20, green: 0.12, blue: 0.065))
-                    Text(entry.modified.formatted(date: .long, time: .omitted)).font(.system(size: 12, weight: .medium)).foregroundStyle(Color(red: 0.38, green: 0.26, blue: 0.14))
-                    Divider().overlay(Color(red: 0.50, green: 0.35, blue: 0.19).opacity(0.35))
+                    Text(entry.title).font(.system(size: 31, weight: .semibold, design: .serif)).foregroundStyle(TomePalette.primary)
+                    Text(entry.modified.formatted(date: .long, time: .omitted)).font(.system(size: 12, weight: .medium)).foregroundStyle(TomePalette.muted)
                     TomeMarkdown(source: entry.body, suppressFirstTitle: true)
                 } else {
-                    Text(emptyTitle).font(.system(size: 28, weight: .semibold, design: .serif)).foregroundStyle(Color(red: 0.20, green: 0.12, blue: 0.065))
-                    Text("When an entry exists in the connected vault, it will appear here as a page to return to—not a scorecard to complete.").font(.system(size: 16, design: .serif)).foregroundStyle(Color(red: 0.28, green: 0.19, blue: 0.11))
+                    Text(emptyTitle).font(.system(size: 28, weight: .semibold, design: .serif)).foregroundStyle(TomePalette.primary)
+                    Text("When an entry exists in the connected vault, it will appear here as a page to return to—not a scorecard to complete.").font(.system(size: 16, design: .serif)).foregroundStyle(TomePalette.secondary)
                 }
             }
             .padding(52).frame(maxWidth: 860, minHeight: 720, alignment: .topLeading)
-            .background(LinearGradient(colors: [Color(red: 0.97, green: 0.90, blue: 0.74), Color(red: 0.86, green: 0.75, blue: 0.56)], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(red: 0.44, green: 0.28, blue: 0.13).opacity(0.45), lineWidth: 1))
+            .background(TomePalette.page, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .shadow(color: .black.opacity(0.38), radius: 28, y: 14)
             .padding(46)
         }
@@ -970,20 +967,20 @@ private struct TomeMarkdown: View {
                 case .heading(let level):
                     MarkdownInline(block.text)
                         .font(.system(size: level == 1 ? 27 : level == 2 ? 21 : 18, weight: .semibold, design: .serif))
-                        .foregroundStyle(Color(red: 0.25, green: 0.14, blue: 0.07))
+                        .foregroundStyle(TomePalette.primary)
                         .padding(.top, level == 1 ? 8 : 16)
                 case .paragraph:
                     MarkdownInline(block.text)
                         .font(.system(size: 17, design: .serif))
-                        .foregroundStyle(Color(red: 0.17, green: 0.11, blue: 0.065))
+                        .foregroundStyle(TomePalette.primary)
                         .lineSpacing(7)
                         .textSelection(.enabled)
                 case .quote:
                     HStack(alignment: .top, spacing: 13) {
-                        Rectangle().fill(Color(red: 0.65, green: 0.43, blue: 0.18).opacity(0.72)).frame(width: 3)
+                        Capsule().fill(TomePalette.accent).frame(width: 3)
                         MarkdownInline(block.text)
                             .font(.system(size: 17, design: .serif)).italic()
-                            .foregroundStyle(Color(red: 0.31, green: 0.20, blue: 0.10))
+                            .foregroundStyle(TomePalette.secondary)
                             .lineSpacing(6)
                     }
                     .padding(.vertical, 7)
@@ -991,23 +988,23 @@ private struct TomeMarkdown: View {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Image(systemName: checked == true ? "checkmark.circle.fill" : checked == false ? "circle" : "smallcircle.fill")
                             .font(.system(size: checked == nil ? 7 : 14, weight: .semibold))
-                            .foregroundStyle(Color(red: 0.53, green: 0.34, blue: 0.14))
+                            .foregroundStyle(TomePalette.accent)
                             .frame(width: 15)
                         MarkdownInline(block.text)
                             .font(.system(size: 16, design: .serif))
-                            .foregroundStyle(Color(red: 0.17, green: 0.11, blue: 0.065))
+                            .foregroundStyle(TomePalette.primary)
                             .lineSpacing(5)
                     }
                 case .code:
                     Text(block.text)
                         .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.20, green: 0.13, blue: 0.08))
+                        .foregroundStyle(TomePalette.secondary)
                         .textSelection(.enabled)
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(red: 0.34, green: 0.22, blue: 0.10).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                        .background(.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
                 case .rule:
-                    Divider().overlay(Color(red: 0.50, green: 0.35, blue: 0.19).opacity(0.42))
+                    Color.clear.frame(height: 5)
                 }
             }
         }
@@ -1078,6 +1075,16 @@ private struct MarkdownInline: View {
             Text(source)
         }
     }
+}
+
+private enum TomePalette {
+    static let background = LinearGradient(colors: [Color(red: 0.006, green: 0.014, blue: 0.028), Color(red: 0.012, green: 0.037, blue: 0.064)], startPoint: .topLeading, endPoint: .bottomTrailing)
+    static let sidebar = Color(red: 0.012, green: 0.030, blue: 0.053)
+    static let page = Color(red: 0.018, green: 0.052, blue: 0.084)
+    static let primary = Color(red: 0.88, green: 0.95, blue: 1.0)
+    static let secondary = Color(red: 0.68, green: 0.80, blue: 0.89)
+    static let muted = Color(red: 0.42, green: 0.63, blue: 0.74)
+    static let accent = Color(red: 0.38, green: 0.81, blue: 0.94)
 }
 
 private struct ChapelRoom: View {
