@@ -9,10 +9,10 @@ held by the MONDAY plugin.
 
 ## Current status
 
-This repository is private while the prototype is separated from Chris's local
-MONDAY environment. It is not yet a self-service installation for other people.
-The present build contains local-only integrations for a user's own MONDAY
-bridge, vault, and project registry; it ships no credentials or personal data.
+This repository is public so the Command Center interface can be shared and
+reviewed. It is not yet a self-service installation for other people. The
+present build contains local-only integrations for a user's own MONDAY bridge,
+vault, and project registry; it ships no credentials or personal data.
 
 Before external distribution, Command Center needs a generic pairing contract
 with each user's installed MONDAY plugin. The interface must show an honest
