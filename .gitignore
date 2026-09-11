@@ -1,0 +1,14 @@
+# Generated Xcode and XcodeGen output
+build/
+DerivedData/
+MondayCommandCenter.xcodeproj/
+*.xcuserstate
+
+# Local visual verification captures and installed products
+visual-check*.png
+*.app/
+
+# Local configuration and secrets
+.env
+.env.*
+*.xcconfig
