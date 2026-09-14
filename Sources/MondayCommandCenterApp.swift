@@ -1,8 +1,5 @@
 import AppKit
-import EventKit
 import Foundation
-import Security
-import SQLite3
 import SwiftUI
 
 @main
@@ -17,31 +14,25 @@ struct MondayCommandCenterApp: App {
 }
 
 private enum CommandCenterRoom: String, CaseIterable, Identifiable {
-    case today, radar, portfolio, journal, researchJournal, chapel, beads, bibleStudy, planner
+    case today, portfolio, continuity, journal, researchJournal, planner
     var id: String { rawValue }
     var title: String {
         switch self {
         case .today: "Today"
-        case .radar: "Command Radar"
         case .portfolio: "Portfolio"
+        case .continuity: "Meeting Continuity"
         case .journal: "Captain's Log"
         case .researchJournal: "Research Journal"
-        case .chapel: "Chapel"
-        case .beads: "Prayer Beads"
-        case .bibleStudy: "Bible Study"
         case .planner: "Planner"
         }
     }
     var icon: String {
         switch self {
         case .today: "rectangle.grid.2x2.fill"
-        case .radar: "scope"
         case .portfolio: "point.3.connected.trianglepath.dotted"
+        case .continuity: "checklist.checked"
         case .journal: "book.closed.fill"
         case .researchJournal: "text.book.closed.fill"
-        case .chapel: "flame.fill"
-        case .beads: "circle.hexagongrid.fill"
-        case .bibleStudy: "text.book.closed.fill"
         case .planner: "calendar"
         }
     }
@@ -49,6 +40,8 @@ private enum CommandCenterRoom: String, CaseIterable, Identifiable {
 
 private struct MondayCommandCenterShell: View {
     @State private var room: CommandCenterRoom = .today
+    @StateObject private var pairing = CommandCenterPairing.shared
+    @State private var showingPairing = false
 
     var body: some View {
         roomContent
@@ -62,19 +55,26 @@ private struct MondayCommandCenterShell: View {
                     Label("Rooms", systemImage: "square.grid.2x2")
                 }
             }
+            ToolbarItem(placement: .automatic) {
+                Button { showingPairing = true } label: {
+                    Label(pairing.isPaired ? "Settings" : "Set up MONDAY", systemImage: pairing.isPaired ? "gearshape" : "link.badge.plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showingPairing) { CommandCenterPairingView() }
+        .task {
+            if !pairing.isPaired { _ = pairing.discoverAndPairIfPossible() }
+            showingPairing = !pairing.isPaired
         }
     }
 
     @ViewBuilder private var roomContent: some View {
         switch room {
         case .today: CommandCenterDashboard(room: $room)
-        case .radar: CommandRadarRoom(openRoom: { room = $0 })
         case .portfolio: CommandCenterView()
-        case .journal: VaultTomeRoom(title: "Captain's Log", subtitle: "Your MONDAY Journal — a private reading room for your recorded days.", folder: "Personal Log", fileName: nil, emptyTitle: "No Captain's Log entries available")
-        case .researchJournal: VaultTomeRoom(title: "Research Journal", subtitle: "A source-backed R&D record of what we built, why it mattered, what worked, and what we learned.", folder: "Diary", fileName: "BUILD-CHRONICLE-2026-05-to-2026-09.md", emptyTitle: "The Research Journal is not available from the MONDAY Vault")
-        case .chapel: ChapelRoom()
-        case .beads: PrayerBeadsRoom()
-        case .bibleStudy: VaultTomeRoom(title: "Bible Study", subtitle: "Read the studies already kept in your MONDAY Vault.", folder: "Bible Studies", fileName: nil, emptyTitle: "No Bible studies available")
+        case .continuity: MeetingContinuityRoom()
+        case .journal: VaultTomeRoom(title: "Captain's Log", subtitle: "Your personal journal, read from Chris Knowledge.", rootURL: pairing.captainsLogURL, emptyTitle: "No Captain's Log entries are available")
+        case .researchJournal: VaultTomeRoom(title: "Research Journal", subtitle: "MONDAY's research journal, read from Monday Knowledge.", rootURL: pairing.researchJournalURL, emptyTitle: "No MONDAY research-journal entries are available")
         case .planner: PlannerRoom()
         }
     }
@@ -113,7 +113,7 @@ private struct CommandCenterDashboard: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task { await projects.reload() }
+        .task { await projects.reload(); await calendar.reloadToday() }
     }
 
     private var masthead: some View {
@@ -178,13 +178,6 @@ private struct CommandCenterDashboard: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.48))
             }
-            CommandRadar(
-                projects: projects.projects,
-                weather: weather.snapshot,
-                calendarEvents: calendar.events,
-                calendarConnected: calendar.state == .connected,
-                openRoom: { room = $0 }
-            )
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 285), spacing: 14)], spacing: 14) {
                 DaySignalsCard(projects: projects.projects, isLoading: projects.loading)
                 WeatherCard(store: weather, location: $weatherLocation)
@@ -270,7 +263,6 @@ private struct CommandRadar: View {
             Reading(label: "WEATHER", icon: "cloud.sun.fill", color: DashboardPalette.accent, title: "Outside", detail: weatherDetail, destination: .today),
             Reading(label: "CALENDAR", icon: "calendar", color: DashboardPalette.green, title: "Today’s time", detail: calendarDetail, destination: .planner),
             Reading(label: "CAPTAIN’S LOG", icon: "book.closed.fill", color: DashboardPalette.amber, title: "Your MONDAY Journal", detail: "Your Personal Log is a read-only shelf of the things worth returning to.", destination: .journal),
-            Reading(label: "CHAPEL", icon: "flame.fill", color: Color(red: 0.92, green: 0.69, blue: 0.37), title: "A quiet place", detail: "No scorecard, no queue. The flame is there when you want to be still.", destination: .chapel)
         ]
     }
 
@@ -339,11 +331,6 @@ private struct CommandRadar: View {
                 .font(.system(size: 9, weight: .bold, design: .rounded)).tracking(1.4)
                 .foregroundStyle(.white.opacity(0.42)).padding(14)
         }
-        .overlay(alignment: .topTrailing) {
-            Button { openRoom(.radar) } label: { Label("Full screen", systemImage: "arrow.up.left.and.arrow.down.right") }
-                .buttonStyle(CommandButtonStyle(prominent: false))
-                .padding(10)
-        }
     }
 }
 
@@ -379,7 +366,6 @@ private struct CommandRadarRoom: View {
             Reading(label: "WEATHER", icon: "cloud.sun.fill", color: DashboardPalette.accent, title: "Outside", detail: weatherDetail, destination: .today),
             Reading(label: "CALENDAR", icon: "calendar", color: DashboardPalette.green, title: "Today’s time", detail: calendarDetail, destination: .planner),
             Reading(label: "CAPTAIN’S LOG", icon: "book.closed.fill", color: DashboardPalette.amber, title: "Your MONDAY Journal", detail: "Your Personal Log is held as a private shelf of the things worth returning to.", destination: .journal),
-            Reading(label: "CHAPEL", icon: "flame.fill", color: Color(red: 0.92, green: 0.69, blue: 0.37), title: "A quiet place", detail: "No scorecard. No queue. Enter when you need quiet.", destination: .chapel)
         ]
     }
 
@@ -492,7 +478,6 @@ private struct CommandRadarRoom: View {
                         Text("02  WEATHER").foregroundStyle(.white.opacity(active == 1 ? 0.88 : 0.33))
                         Text("03  CALENDAR").foregroundStyle(.white.opacity(active == 2 ? 0.88 : 0.33))
                         Text("04  CAPTAIN'S LOG").foregroundStyle(.white.opacity(active == 3 ? 0.88 : 0.33))
-                        Text("05  CHAPEL").foregroundStyle(.white.opacity(active == 4 ? 0.88 : 0.33))
                     }
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .position(x: width * 0.84, y: height * 0.76)
@@ -576,11 +561,11 @@ private struct WeatherCard: View {
             if let snapshot = store.snapshot {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(snapshot.temperature, format: .number.precision(.fractionLength(0)))°")
+                        Text("\(snapshot.temperature, format: .number.precision(.fractionLength(0)))°F")
                             .font(.system(size: 36, weight: .bold, design: .rounded)).foregroundStyle(.white)
                         Text(snapshot.condition)
                             .font(.system(size: 12, weight: .semibold)).foregroundStyle(DashboardPalette.accent)
-                        Text("Feels like \(snapshot.apparentTemperature, format: .number.precision(.fractionLength(0)))° · wind \(snapshot.windSpeed, format: .number.precision(.fractionLength(0))) km/h")
+                        Text("Feels like \(snapshot.apparentTemperature, format: .number.precision(.fractionLength(0)))°F · wind \(snapshot.windSpeed, format: .number.precision(.fractionLength(0))) mph")
                             .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
                     }
                     Spacer()
@@ -642,13 +627,13 @@ private struct CalendarSignalsCard: View {
         CommandCard(eyebrow: "DAY SIGNALS", title: "Today's calendar", icon: "calendar") {
             switch store.state {
             case .notConnected:
-                Text("Calendar stays private until you explicitly connect it. This dashboard does not guess which events are family, work, or personal.")
+                Text("Choose the Planner shared-plan JSON in Settings. Codex owns the calendar connection; Command Center reads only today’s planned titles and times.")
                     .font(.system(size: 13)).foregroundStyle(.white.opacity(0.56))
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Connect calendar") { Task { await store.connect() } }
-                    .buttonStyle(CommandButtonStyle(prominent: true))
+                Text("Settings → Planner shared plan")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(DashboardPalette.accent)
             case .loading:
-                ProgressView("Connecting calendar…").tint(DashboardPalette.accent).foregroundStyle(.white.opacity(0.65))
+                ProgressView("Loading shared plan…").tint(DashboardPalette.accent).foregroundStyle(.white.opacity(0.65))
                     .frame(maxWidth: .infinity, minHeight: 92)
             case .connected:
                 if store.events.isEmpty {
@@ -662,13 +647,11 @@ private struct CalendarSignalsCard: View {
                     }
                 }
                 HStack {
-                    Text("Only today’s event titles and times are shown here.").font(.system(size: 10)).foregroundStyle(.white.opacity(0.38))
+                    Text("Only today’s planned titles and times are shown here.").font(.system(size: 10)).foregroundStyle(.white.opacity(0.38))
                     Spacer()
                     Button("Refresh") { Task { await store.reloadToday() } }
                         .buttonStyle(.plain).font(.system(size: 10, weight: .semibold)).foregroundStyle(DashboardPalette.accent)
                 }
-            case .denied:
-                UnavailableInline(message: "Calendar access was not granted. You can enable it in System Settings when you’re ready.")
             case .unavailable(let message):
                 UnavailableInline(message: message)
             }
@@ -841,16 +824,10 @@ private struct VaultEntry: Identifiable {
     let modified: Date
 }
 
-private enum VaultShelf {
-    static func entries(in folder: String, fileName: String? = nil) -> [VaultEntry] {
-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Knowledge Vault/Monday Vault/\(folder)")
-        let urls: [URL]
-        if let fileName {
-            urls = [root.appendingPathComponent(fileName)]
-        } else {
-            guard let contents = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return [] }
-            urls = contents
-        }
+@MainActor private enum VaultShelf {
+    static func entries(at root: URL?) -> [VaultEntry] {
+        guard let root,
+              let urls = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return [] }
         return urls.compactMap { url in
             guard url.pathExtension.lowercased() == "md", url.lastPathComponent != "README.md", let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
             let cleaned = removeFrontMatter(from: text).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -870,25 +847,15 @@ private enum VaultShelf {
 private struct VaultTomeRoom: View {
     let title: String
     let subtitle: String
-    let folder: String
+    let rootURL: URL?
     let emptyTitle: String
-    let fileName: String?
     @State private var entries: [VaultEntry] = []
     @State private var selectedID: String?
 
-    init(title: String, subtitle: String, folder: String, fileName: String?, emptyTitle: String) {
+    init(title: String, subtitle: String, rootURL: URL?, emptyTitle: String) {
         self.title = title
         self.subtitle = subtitle
-        self.folder = folder
-        self.fileName = fileName
-        self.emptyTitle = emptyTitle
-    }
-
-    init(title: String, subtitle: String, folder: String, emptyTitle: String, fileName: String? = nil) {
-        self.title = title
-        self.subtitle = subtitle
-        self.folder = folder
-        self.fileName = fileName
+        self.rootURL = rootURL
         self.emptyTitle = emptyTitle
     }
 
@@ -920,7 +887,7 @@ private struct VaultTomeRoom: View {
                 TomePage(entry: selected, emptyTitle: emptyTitle)
             }
         }
-        .task { entries = VaultShelf.entries(in: folder, fileName: fileName); selectedID = entries.first?.id }
+        .task(id: rootURL?.path) { entries = VaultShelf.entries(at: rootURL); selectedID = entries.first?.id }
     }
 }
 
@@ -1087,97 +1054,6 @@ private enum TomePalette {
     static let accent = Color(red: 0.38, green: 0.81, blue: 0.94)
 }
 
-private struct ChapelRoom: View {
-    var body: some View {
-        ZStack {
-            Color(red: 0.015, green: 0.013, blue: 0.018).ignoresSafeArea()
-            VStack(spacing: 18) {
-                Spacer()
-                ChronicleCandle().frame(width: 430, height: 430)
-                Text("The Chapel").font(.system(size: 36, weight: .semibold, design: .serif)).foregroundStyle(.white)
-                Text("“The Lord is near unto all them that call upon him.” — Psalm 145:18, KJV")
-                    .font(.system(size: 16, design: .serif)).foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.58)).multilineTextAlignment(.center)
-                Text("A quiet place. No streaks. No progress meter. Stay as long as you need.").font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
-                Spacer()
-            }.padding(40)
-        }
-    }
-}
-
-/// The Chronicle candle art with the source application's masked flame-and-halo motion.
-private struct ChronicleCandle: View {
-    private let candle = Bundle.main.url(forResource: "chronicle-candle", withExtension: "png").flatMap(NSImage.init(contentsOf:))
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
-            GeometryReader { proxy in
-                let side = min(proxy.size.width, proxy.size.height)
-                let elapsed = timeline.date.timeIntervalSinceReferenceDate
-                let sway = sin(elapsed * 1.65) * 0.75 + sin(elapsed * 2.9) * 0.18
-                let pulse = 0.94 + (sin(elapsed * 2.85) + 1) * 0.03
-
-                ZStack {
-                    if let candle {
-                        Image(nsImage: candle)
-                            .resizable().scaledToFit().scaleEffect(0.92)
-                        // Chronicle masks the still photo, then animates only the flame-shaped slice above the wick.
-                        Ellipse()
-                            .fill(Color(red: 0.04, green: 0.055, blue: 0.10).opacity(0.91))
-                            .blur(radius: 5)
-                            .frame(width: side * 0.13, height: side * 0.29)
-                            .offset(y: -side * 0.268)
-                        Image(nsImage: candle)
-                            .resizable().scaledToFit()
-                            .scaleEffect(x: 0.92 * pulse, y: 0.93 * pulse)
-                            .rotationEffect(.degrees(sway), anchor: .bottom)
-                            .opacity(0.95 + (sin(elapsed * 2.85) + 1) * 0.025)
-                            .shadow(color: Color(red: 1, green: 0.78, blue: 0.42).opacity(0.46), radius: 8)
-                            .mask(Ellipse().frame(width: side * 0.14, height: side * 0.36).offset(y: -side * 0.261))
-                    } else {
-                        Image(systemName: "flame.fill").font(.system(size: 100)).foregroundStyle(.orange)
-                    }
-                }
-                .frame(width: proxy.size.width, height: proxy.size.height)
-            }
-        }
-        .accessibilityLabel("Chronicle prayer candle with a gently flickering flame")
-    }
-}
-
-private struct PrayerBeadsRoom: View {
-    @State private var step = 0
-    private let steps = ["Cross · Praise and dedication", "Faith · Trust the Lord", "Hope · Rest in his promises", "Love · Receive and give love", "Thanksgiving · Name particular gifts", "Scripture · Linger over one verse", "Intercession · Bring people and places", "Surrender · Close in worship"]
-    // Artwork from the Acts 4:13 Scripture Prayer Beads path.
-    private let beadArtwork = ["large-cross", "ruby", "emerald", "sapphire", "diamond", "silver-cross", "centerpiece", "jasper"]
-    var body: some View {
-        ZStack {
-            LinearGradient(colors: [Color(red: 0.035, green: 0.050, blue: 0.075), Color(red: 0.018, green: 0.025, blue: 0.040)], startPoint: .top, endPoint: .bottom).ignoresSafeArea()
-            VStack(spacing: 26) {
-                VStack(spacing: 8) { Text("BAPTIST PRAYER BEADS").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.7).foregroundStyle(DashboardPalette.accent); Text("One bead at a time.").font(.system(size: 34, weight: .semibold, design: .serif)).foregroundStyle(.white); Text("A gentle path compatible with your own beads. You can pause, pray in silence, or stop.").font(.system(size: 14)).foregroundStyle(.white.opacity(0.55)) }
-                HStack(spacing: 10) { ForEach(steps.indices, id: \.self) { index in Button { step = index } label: { PrayerBeadArtwork(key: beadArtwork[index]).frame(width: index == 0 ? 54 : 42, height: index == 0 ? 54 : 42).padding(4).background(index == step ? DashboardPalette.accent.opacity(0.18) : .clear, in: Circle()).overlay(Circle().stroke(index == step ? DashboardPalette.accent : .white.opacity(0.16), lineWidth: index == step ? 2 : 1)).scaleEffect(index == step ? 1.12 : 1) }.buttonStyle(.plain).accessibilityLabel(steps[index]) } }
-                Text("BEAD \(step + 1) OF \(steps.count)").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(.white.opacity(0.45))
-                PrayerBeadArtwork(key: beadArtwork[step]).frame(width: 132, height: 132).padding(.vertical, 2)
-                Text(steps[step]).font(.system(size: 26, weight: .semibold, design: .serif)).foregroundStyle(.white)
-                Text(step == 0 ? "Begin with praise and dedication. Psalm 100:4 may be a fitting place to start." : "Pray in your own words, or stay quietly with this intention before moving on.").font(.system(size: 16, design: .serif)).foregroundStyle(.white.opacity(0.67)).multilineTextAlignment(.center).frame(maxWidth: 600)
-                HStack { Button("Previous") { step = max(0, step - 1) }.buttonStyle(CommandButtonStyle(prominent: false)).disabled(step == 0); Button(step == steps.count - 1 ? "Rest here" : "Next bead") { step = min(steps.count - 1, step + 1) }.buttonStyle(CommandButtonStyle(prominent: true)) }
-            }.padding(40)
-        }
-    }
-}
-
-private struct PrayerBeadArtwork: View {
-    let key: String
-    var body: some View {
-        Group {
-            if let url = Bundle.main.url(forResource: key, withExtension: "webp"), let image = NSImage(contentsOf: url) {
-                Image(nsImage: image).resizable().scaledToFit()
-            } else {
-                Circle().fill(Color(red: 0.60, green: 0.40, blue: 0.19))
-            }
-        }
-    }
-}
-
 private struct PlannerAPIResponse: Decodable { let status: String; let plan: DailyPlannerPlan? }
 private struct DailyPlannerPlan: Decodable {
     let date: String
@@ -1189,11 +1065,31 @@ private struct DailyPlannerPlan: Decodable {
     let priorities: PlannerPriorities
     let notes: [String]
     let compass: [PlannerCompassItem]
+    let brief: PlannerBrief?
 }
 private struct PlannerSource: Decodable { let kind: String; let name: String; let status: String; let fetchedAt: Date }
 private struct PlannerScheduleItem: Decodable { let time: String; let end: String; let title: String }
 private struct PlannerPriorities: Decodable { let a: [String]; let b: [String]; let c: [String] }
 private struct PlannerCompassItem: Decodable { let role: String; let goal: String }
+private struct PlannerBrief: Decodable {
+    let mission: String
+    let pullForwards: [String]
+    let risks: [String]
+    let workPortfolio: [PlannerPortfolioItem]
+    let personalPortfolio: [PlannerPortfolioItem]
+    let sourceHealth: [PlannerSource]
+}
+private struct PlannerPortfolioItem: Decodable { let title: String; let status: String; let updated: String }
+
+private enum PlannerFeedReader {
+    static func load(from url: URL) throws -> DailyPlannerPlan {
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let response = try? decoder.decode(PlannerAPIResponse.self, from: data), let plan = response.plan { return plan }
+        return try decoder.decode(DailyPlannerPlan.self, from: data)
+    }
+}
 
 @MainActor
 private final class DailyPlannerFeed: ObservableObject {
@@ -1201,25 +1097,22 @@ private final class DailyPlannerFeed: ObservableObject {
     @Published private(set) var message = "Reading today's MONDAY plan…"
 
     func refresh() async {
-        guard let token = bridgeToken() else { message = "The local MONDAY bridge is not paired on this Mac."; return }
+        plan = nil
+        guard let url = CommandCenterPairing.shared.plannerFeedURL else {
+            message = "Choose the Planner shared-plan JSON in Settings. The Codex Planner skill writes it, and Command Center reads it without calendar credentials."
+            return
+        }
         do {
-            var request = URLRequest(url: URL(string: "http://127.0.0.1:39431/v1/planner/today")!)
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 4
-            let (data, httpResponse) = try await URLSession.shared.data(for: request)
-            guard (httpResponse as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-            let decoded = try decoder.decode(PlannerAPIResponse.self, from: data)
-            plan = decoded.plan
-            message = decoded.plan == nil ? "MONDAY has not prepared today's plan yet." : "Prepared \(decoded.plan!.generatedAt.formatted(.dateTime.hour().minute()))."
-        } catch { message = "Today's MONDAY plan is not reachable right now." }
-    }
-
-    private func bridgeToken() -> String? {
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: "MONDAY Codex Activity Bridge", kSecAttrAccount: NSUserName(), kSecReturnData: true]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+            let candidate = try PlannerFeedReader.load(from: url)
+            guard candidate.isCurrentForLocalDay else {
+                message = "The selected Planner plan is dated \(candidate.date), not today. Refresh it in Codex before Command Center presents it as a daily plan."
+                return
+            }
+            plan = candidate
+            message = ""
+        } catch {
+            message = "The selected Planner shared plan could not be read: \(error.localizedDescription)"
+        }
     }
 }
 
@@ -1235,6 +1128,11 @@ private struct PlannerRoom: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("DAILY PLANNING PAGE").font(.system(size: 11, weight: .black, design: .rounded)).tracking(1.5).foregroundStyle(PlannerPaper.ink.opacity(0.72))
                             Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day().year())).font(.system(size: 29, weight: .semibold, design: .serif)).foregroundStyle(PlannerPaper.ink)
+                            if let plan = planner.plan {
+                                Text("Prepared \(plan.generatedAt.formatted(date: .omitted, time: .shortened)) · \(plan.sourceSummary)")
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                                    .foregroundStyle(PlannerPaper.ink.opacity(0.58))
+                            }
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 7) {
@@ -1255,6 +1153,7 @@ private struct PlannerRoom: View {
                         MacPlannerNotes(plan: planner.plan).frame(maxWidth: .infinity, alignment: .topLeading)
                         MacPlannerCompass(plan: planner.plan).frame(maxWidth: .infinity, alignment: .topLeading)
                     }
+                    MacPlannerCommandBrief(plan: planner.plan)
                     Text(planner.plan == nil ? planner.message : "FRANKLIN-STYLE DAILY PLANNING PAGE · PREPARED BY MONDAY · CALENDAR REMAINS THE OWNER OF TIME").font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.9).foregroundStyle(PlannerPaper.ink.opacity(0.48)).padding(.vertical, 15)
                 }
                 .background(PlannerPaper.page, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1311,9 +1210,15 @@ private struct MacPlannerTaskList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacPlannerSectionTitle(title: "PRIORITIZED DAILY TASK LIST", detail: "A / B / C")
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                HStack(alignment: .top, spacing: 9) { Text(item.0).font(.system(size: 10, weight: .black, design: .rounded)).foregroundStyle(priorityColor(index)).frame(width: 24); Text(item.1).font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink).fixedSize(horizontal: false, vertical: true) }
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 8).background(priorityColor(index).opacity(0.11), in: RoundedRectangle(cornerRadius: 7, style: .continuous)).padding(.horizontal, 12).padding(.vertical, 2)
+            if items.isEmpty {
+                Text("No prioritized work has been prepared yet.")
+                    .font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.62))
+                    .padding(.horizontal, 18).padding(.vertical, 14)
+            } else {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    HStack(alignment: .top, spacing: 9) { Text(item.0).font(.system(size: 10, weight: .black, design: .rounded)).foregroundStyle(priorityColor(index)).frame(width: 24); Text(item.1).font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink).fixedSize(horizontal: false, vertical: true) }
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 8).background(priorityColor(index).opacity(0.11), in: RoundedRectangle(cornerRadius: 7, style: .continuous)).padding(.horizontal, 12).padding(.vertical, 2)
+                }
             }
             Spacer(minLength: 14)
         }
@@ -1325,7 +1230,15 @@ private struct MacPlannerTaskList: View {
 private struct MacPlannerNotes: View {
     let plan: DailyPlannerPlan?
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) { MacPlannerSectionTitle(title: "NOTES & IDEAS", detail: "CAPTURE"); ForEach(Array((plan?.notes ?? []).enumerated()), id: \.offset) { _, note in Text(note).font(.system(size: 12, design: .serif)).lineSpacing(4).foregroundStyle(PlannerPaper.ink.opacity(0.86)).padding(.horizontal, 18).padding(.vertical, 9).fixedSize(horizontal: false, vertical: true) }; Spacer(minLength: 14) }
+        VStack(alignment: .leading, spacing: 0) {
+            MacPlannerSectionTitle(title: "NOTES & IDEAS", detail: "CAPTURE")
+            if let notes = plan?.notes, !notes.isEmpty {
+                ForEach(Array(notes.enumerated()), id: \.offset) { _, note in Text(note).font(.system(size: 12, design: .serif)).lineSpacing(4).foregroundStyle(PlannerPaper.ink.opacity(0.86)).padding(.horizontal, 18).padding(.vertical, 9).fixedSize(horizontal: false, vertical: true) }
+            } else {
+                Text("No notes were prepared for this plan.").font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.62)).padding(.horizontal, 18).padding(.vertical, 14)
+            }
+            Spacer(minLength: 14)
+        }
     }
 }
 
@@ -1334,11 +1247,117 @@ private struct MacPlannerCompass: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacPlannerSectionTitle(title: "DAILY COMPASS", detail: "ROLES / GOALS")
-            ForEach(0..<4, id: \.self) { index in
-                let item = plan?.compass.indices.contains(index) == true ? plan?.compass[index] : nil
-                VStack(alignment: .leading, spacing: 7) { HStack { Text("ROLE").frame(width: 33, alignment: .leading); Text(item?.role ?? "").font(.system(size: 12, design: .serif)) }; HStack(alignment: .top) { Text("GOAL").frame(width: 33, alignment: .leading); Text(item?.goal ?? "").font(.system(size: 12, design: .serif)).fixedSize(horizontal: false, vertical: true) } }.font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.6).foregroundStyle(PlannerPaper.ink.opacity(0.72)).padding(.horizontal, 18).padding(.vertical, 10)
+            if let compass = plan?.compass, !compass.isEmpty {
+                ForEach(Array(compass.enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 7) { HStack { Text("ROLE").frame(width: 33, alignment: .leading); Text(item.role).font(.system(size: 12, design: .serif)) }; HStack(alignment: .top) { Text("GOAL").frame(width: 33, alignment: .leading); Text(item.goal).font(.system(size: 12, design: .serif)).fixedSize(horizontal: false, vertical: true) } }.font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.6).foregroundStyle(PlannerPaper.ink.opacity(0.72)).padding(.horizontal, 18).padding(.vertical, 10)
+                }
+            } else {
+                Text("No roles or goals were prepared for this plan.").font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.62)).padding(.horizontal, 18).padding(.vertical, 14)
             }
         }
+    }
+}
+
+private struct MacPlannerCommandBrief: View {
+    let plan: DailyPlannerPlan?
+    private var brief: PlannerBrief? { plan?.brief }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacPlannerSectionTitle(title: "MONDAY COMMAND BRIEF", detail: "EVIDENCE / PULL-FORWARDS / SOURCE HEALTH")
+            if let brief {
+                HStack(alignment: .top, spacing: 0) {
+                    BriefColumn(title: "PULL FORWARDS", items: brief.pullForwards, empty: "No pull-forwards were prepared.")
+                    BriefColumn(title: "WATCH", items: brief.risks, empty: "No source or planning risks were reported.")
+                    PortfolioColumn(title: "WORK PORTFOLIO", items: brief.workPortfolio, empty: "No active work-project records were read.")
+                }
+                if !brief.personalPortfolio.isEmpty {
+                    PortfolioColumn(title: "PERSONAL PORTFOLIO", items: brief.personalPortfolio, empty: "")
+                        .padding(.horizontal, 16).padding(.bottom, 12)
+                }
+                SourceHealthRow(sources: brief.sourceHealth)
+            } else {
+                Text("The connected plan has not supplied a MONDAY Command Brief yet.")
+                    .font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.62))
+                    .padding(.horizontal, 18).padding(.vertical, 14)
+            }
+        }
+    }
+}
+
+private struct BriefColumn: View {
+    let title: String
+    let items: [String]
+    let empty: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.system(size: 9, weight: .black, design: .rounded)).tracking(0.8).foregroundStyle(PlannerPaper.ink.opacity(0.58))
+            if items.isEmpty {
+                Text(empty).font(.system(size: 11, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.6))
+            } else {
+                ForEach(Array(items.prefix(4).enumerated()), id: \.offset) { _, item in
+                    Text(item).font(.system(size: 11, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading).padding(16)
+    }
+}
+
+private struct PortfolioColumn: View {
+    let title: String
+    let items: [PlannerPortfolioItem]
+    let empty: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.system(size: 9, weight: .black, design: .rounded)).tracking(0.8).foregroundStyle(PlannerPaper.ink.opacity(0.58))
+            if items.isEmpty {
+                Text(empty).font(.system(size: 11, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.6))
+            } else {
+                ForEach(Array(items.prefix(4).enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(item.status.uppercased()).font(.system(size: 8, weight: .black, design: .rounded)).foregroundStyle(PlannerEventColor.forTitle(item.status))
+                        Text(item.title).font(.system(size: 11, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.9)).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading).padding(16)
+    }
+}
+
+private struct SourceHealthRow: View {
+    let sources: [PlannerSource]
+    var body: some View {
+        HStack(spacing: 9) {
+            Text("SOURCE HEALTH").font(.system(size: 9, weight: .black, design: .rounded)).tracking(0.8).foregroundStyle(PlannerPaper.ink.opacity(0.58))
+            ForEach(Array(sources.prefix(6).enumerated()), id: \.offset) { _, source in
+                Text("\(source.name): \(source.status)")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(source.status == "available" ? PlannerEventColor.forTitle("workout") : PlannerEventColor.urgent)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PlannerPaper.ink.opacity(0.045))
+    }
+}
+
+private extension DailyPlannerPlan {
+    var isCurrentForLocalDay: Bool {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: timezone) ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return date == formatter.string(from: .now)
+    }
+
+    var sourceSummary: String {
+        let available = sources.filter { $0.status == "available" }.map(\.name)
+        guard !available.isEmpty else { return "No verified sources" }
+        let shown = available.prefix(4).joined(separator: " · ")
+        return available.count > 4 ? "\(shown) + \(available.count - 4) sources" : shown
     }
 }
 
@@ -1376,7 +1395,7 @@ private enum PlannerEventColor {
     }
 }
 
-private enum DashboardPalette {
+enum DashboardPalette {
     static let canvas = Color(red: 0.027, green: 0.043, blue: 0.075)
     static let card = Color(red: 0.070, green: 0.098, blue: 0.150)
     static let accent = Color(red: 0.38, green: 0.81, blue: 0.94)
@@ -1390,10 +1409,14 @@ private final class ProjectStore: ObservableObject {
     @Published private(set) var projects: [Project] = []
     @Published private(set) var error: String?
     @Published private(set) var loading = false
-    private let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Knowledge Vault/monday-memory-mcp/data/projects.sqlite3").path
 
     func reload() async {
         guard !loading else { return }
+        guard let path = CommandCenterPairing.shared.projectsDirectoryURL?.path else {
+            projects = []
+            error = "Pair Command Center with your installed MONDAY plugin and Project Knowledge vault before project context can be read."
+            return
+        }
         loading = true
         defer { loading = false }
         do { projects = try Registry.read(path: path); error = nil }
@@ -1404,6 +1427,7 @@ private final class ProjectStore: ObservableObject {
 private struct Project: Identifiable {
     let id: String
     let title: String
+    let status: String
     let health: String
     let domain: String?
     let stage: String?
@@ -1428,22 +1452,50 @@ private struct Project: Identifiable {
 private enum Registry {
     static func read(path: String) throws -> [Project] {
         guard FileManager.default.fileExists(atPath: path) else { throw RegistryError.missing(path) }
-        var database: OpaquePointer?
-        guard sqlite3_open_v2(path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let database else { throw RegistryError.unreadable }
-        defer { sqlite3_close(database) }
-        let sql = "SELECT id,title,health,domain,stage,gate_state,gate_date,next_milestone,next_action,priority,updated_at FROM projects ORDER BY CASE health WHEN 'intervention' THEN 0 WHEN 'at-risk' THEN 1 WHEN 'watch' THEN 2 WHEN 'ready' THEN 3 ELSE 4 END, priority ASC, updated_at DESC"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else { throw RegistryError.unreadable }
-        defer { sqlite3_finalize(statement) }
-        var result: [Project] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            result.append(Project(id: text(statement, 0) ?? UUID().uuidString, title: text(statement, 1) ?? "Untitled project", health: text(statement, 2) ?? "unknown", domain: text(statement, 3), stage: text(statement, 4), gateState: text(statement, 5), milestone: text(statement, 7), nextAction: text(statement, 8), priority: integer(statement, 9), gateDate: date(text(statement, 6)), updatedAt: date(text(statement, 10))))
-        }
-        return result
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            .filter { $0.pathExtension.lowercased() == "md" }
+            .compactMap(project(from:))
+            .sorted {
+                if $0.status == "active" && $1.status != "active" { return true }
+                if $0.status != "active" && $1.status == "active" { return false }
+                return ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
+            }
     }
 
-    private static func text(_ statement: OpaquePointer?, _ index: Int32) -> String? { guard sqlite3_column_type(statement, index) != SQLITE_NULL, let value = sqlite3_column_text(statement, index) else { return nil }; return String(cString: value) }
-    private static func integer(_ statement: OpaquePointer?, _ index: Int32) -> Int? { sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : Int(sqlite3_column_int(statement, index)) }
+    private static func project(from url: URL) throws -> Project? {
+        let metadata = frontMatter(in: try String(contentsOf: url, encoding: .utf8))
+        guard metadata["type"] == "project" else { return nil }
+        let title = url.deletingPathExtension().lastPathComponent
+        return Project(
+            id: metadata["id"] ?? title.lowercased().replacingOccurrences(of: " ", with: "-"),
+            title: title,
+            status: metadata["status"] ?? "unknown",
+            health: metadata["health"] ?? "unknown",
+            domain: metadata["organization"],
+            stage: metadata["stage"],
+            gateState: metadata["gate_state"],
+            milestone: metadata["next_milestone"],
+            nextAction: metadata["next_action"],
+            priority: Int(metadata["priority"] ?? ""),
+            gateDate: date(metadata["gate_date"]),
+            updatedAt: date(metadata["updated"] ?? metadata["last_evidence_review"])
+        )
+    }
+
+    private static func frontMatter(in content: String) -> [String: String] {
+        let lines = content.components(separatedBy: .newlines)
+        guard lines.first == "---", let end = lines.dropFirst().firstIndex(of: "---") else { return [:] }
+        return Dictionary(uniqueKeysWithValues: lines[1..<end].compactMap { line in
+            guard let separator = line.firstIndex(of: ":") else { return nil }
+            let key = String(line[..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: separator)...])
+                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\\\""))
+            return key.isEmpty ? nil : (key, value)
+        })
+    }
+
     private static func date(_ value: String?) -> Date? {
         guard let value else { return nil }
         let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1507,7 +1559,7 @@ private final class WeatherStore: ObservableObject {
             let (geoData, _) = try await URLSession.shared.data(from: geocodeURL)
             let geocode = try JSONDecoder().decode(GeocodeResponse.self, from: geoData)
             guard let result = geocode.results?.first else { throw WeatherError.invalidLocation }
-            guard let forecastURL = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(result.latitude)&longitude=\(result.longitude)&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day") else { throw WeatherError.unavailable }
+            guard let forecastURL = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(result.latitude)&longitude=\(result.longitude)&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day&temperature_unit=fahrenheit&wind_speed_unit=mph") else { throw WeatherError.unavailable }
             let (forecastData, _) = try await URLSession.shared.data(from: forecastURL)
             let forecast = try JSONDecoder().decode(ForecastResponse.self, from: forecastData)
             snapshot = WeatherSnapshot(place: [result.name, result.admin1].compactMap { $0 }.joined(separator: ", "), temperature: forecast.current.temperature2m, apparentTemperature: forecast.current.apparentTemperature, windSpeed: forecast.current.windSpeed10m, weatherCode: forecast.current.weatherCode, isDaylight: forecast.current.isDay == 1, updatedAt: .now)
@@ -1526,36 +1578,39 @@ private enum WeatherError: LocalizedError { case invalidLocation, unavailable; v
 private struct DayEvent: Identifiable {
     let id: String
     let title: String
-    let startDate: Date
-    var timeLabel: String { startDate.formatted(date: .omitted, time: .shortened) }
+    let timeLabel: String
 }
 
-private enum CalendarState: Equatable { case notConnected, loading, connected, denied, unavailable(String) }
+private enum CalendarState: Equatable { case notConnected, loading, connected, unavailable(String) }
 
 @MainActor
 private final class CalendarStore: ObservableObject {
     @Published private(set) var state: CalendarState = .notConnected
     @Published private(set) var events: [DayEvent] = []
-    private let eventStore = EKEventStore()
 
     func connect() async {
-        state = .loading
-        do {
-            let granted: Bool
-            if #available(macOS 14.0, *) { granted = try await eventStore.requestFullAccessToEvents() }
-            else { granted = try await eventStore.requestAccess(to: .event) }
-            guard granted else { state = .denied; return }
-            await reloadToday()
-        } catch { state = .unavailable("Calendar could not be connected: \(error.localizedDescription)") }
+        await reloadToday()
     }
 
     func reloadToday() async {
-        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { state = .denied; return }
-        let calendar = Calendar.current
-        let start = Date.now
-        guard let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: start)) else { state = .unavailable("Today's calendar window could not be calculated."); return }
-        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: nil)
-        events = eventStore.events(matching: predicate).sorted { $0.startDate < $1.startDate }.map { DayEvent(id: $0.eventIdentifier, title: $0.title, startDate: $0.startDate) }
-        state = .connected
+        events = []
+        guard let url = CommandCenterPairing.shared.plannerFeedURL else {
+            state = .notConnected
+            return
+        }
+        state = .loading
+        do {
+            let plan = try PlannerFeedReader.load(from: url)
+            guard plan.isCurrentForLocalDay else {
+                state = .unavailable("The Planner shared plan is dated \(plan.date), not today. Refresh it in Codex before using it in Command Center.")
+                return
+            }
+            events = plan.schedule
+                .sorted { $0.time < $1.time }
+                .map { DayEvent(id: "\($0.time)-\($0.end)-\($0.title)", title: $0.title, timeLabel: $0.time) }
+            state = .connected
+        } catch {
+            state = .unavailable("The Planner shared plan could not be read: \(error.localizedDescription)")
+        }
     }
 }

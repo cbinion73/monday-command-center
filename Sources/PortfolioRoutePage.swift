@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 import SwiftUI
 
 struct CommandCenterView: View {
@@ -468,8 +467,18 @@ private struct ContentCard<Content: View>: View { @ViewBuilder let content: Cont
 
 @MainActor private final class ProjectStore: ObservableObject {
     @Published private(set) var projects: [Project] = []; @Published private(set) var error: String?; @Published private(set) var loading = false
-    private let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Knowledge Vault/monday-memory-mcp/data/projects.sqlite3").path
-    func reload() async { guard !loading else { return }; loading = true; defer { loading = false }; do { projects = try Registry.read(path: path); error = nil } catch let readError { error = readError.localizedDescription } }
+    func reload() async {
+        guard !loading else { return }
+        guard let path = CommandCenterPairing.shared.projectsDirectoryURL?.path else {
+            projects = []
+            error = "Pair Command Center with your installed MONDAY plugin and Project Knowledge vault before project context can be read."
+            return
+        }
+        loading = true
+        defer { loading = false }
+        do { projects = try Registry.read(path: path); error = nil }
+        catch let readError { error = readError.localizedDescription }
+    }
 }
 
 private struct Project: Identifiable {
@@ -532,13 +541,32 @@ private struct ProjectGroup: Identifiable {
 
 private enum Registry {
     static func read(path: String) throws -> [Project] {
-        guard FileManager.default.fileExists(atPath: path) else { throw RegistryError.missing(path) }; var db: OpaquePointer?; guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else { throw RegistryError.unreadable }; defer { sqlite3_close(db) }
-        let sql = "SELECT id,title,status,health,domain,stage,gate_state,gate_date,next_milestone,next_action,priority,updated_at,planned_hours_6m,actual_hours_6m FROM projects ORDER BY CASE health WHEN 'intervention' THEN 0 WHEN 'at-risk' THEN 1 WHEN 'watch' THEN 2 WHEN 'ready' THEN 3 ELSE 4 END, priority ASC, updated_at DESC"; var statement: OpaquePointer?; guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else { throw RegistryError.unreadable }; defer { sqlite3_finalize(statement) }
-        var result: [Project] = []; while sqlite3_step(statement) == SQLITE_ROW { result.append(Project(id: string(statement, 0) ?? UUID().uuidString, title: string(statement, 1) ?? "Untitled project", status: string(statement, 2) ?? "unknown", health: string(statement, 3) ?? "unknown", domain: string(statement, 4), stage: string(statement, 5), gateState: string(statement, 6), milestone: string(statement, 8), action: string(statement, 9), priority: integer(statement, 10), gateDate: date(string(statement, 7)), updatedAt: date(string(statement, 11)), plannedHours: decimal(statement, 12), actualHours: decimal(statement, 13))) }; return result
+        guard FileManager.default.fileExists(atPath: path) else { throw RegistryError.missing(path) }
+        return try FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: path, isDirectory: true), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            .filter { $0.pathExtension.lowercased() == "md" }
+            .compactMap(project(from:))
+            .sorted {
+                if $0.status == "active" && $1.status != "active" { return true }
+                if $0.status != "active" && $1.status == "active" { return false }
+                return ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast)
+            }
     }
-    private static func string(_ statement: OpaquePointer?, _ index: Int32) -> String? { guard sqlite3_column_type(statement, index) != SQLITE_NULL, let value = sqlite3_column_text(statement, index) else { return nil }; return String(cString: value) }
-    private static func integer(_ statement: OpaquePointer?, _ index: Int32) -> Int? { sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : Int(sqlite3_column_int(statement, index)) }
-    private static func decimal(_ statement: OpaquePointer?, _ index: Int32) -> Double? { sqlite3_column_type(statement, index) == SQLITE_NULL ? nil : sqlite3_column_double(statement, index) }
+    private static func project(from url: URL) throws -> Project? {
+        let metadata = frontMatter(in: try String(contentsOf: url, encoding: .utf8))
+        guard metadata["type"] == "project" else { return nil }
+        let title = url.deletingPathExtension().lastPathComponent
+        return Project(id: metadata["id"] ?? title.lowercased().replacingOccurrences(of: " ", with: "-"), title: title, status: metadata["status"] ?? "unknown", health: metadata["health"] ?? "unknown", domain: metadata["organization"], stage: metadata["stage"], gateState: metadata["gate_state"], milestone: metadata["next_milestone"], action: metadata["next_action"], priority: Int(metadata["priority"] ?? ""), gateDate: date(metadata["gate_date"]), updatedAt: date(metadata["updated"] ?? metadata["last_evidence_review"]), plannedHours: Double(metadata["planned_hours_6m"] ?? ""), actualHours: Double(metadata["actual_hours_6m"] ?? ""))
+    }
+    private static func frontMatter(in content: String) -> [String: String] {
+        let lines = content.components(separatedBy: .newlines)
+        guard lines.first == "---", let end = lines.dropFirst().firstIndex(of: "---") else { return [:] }
+        return Dictionary(uniqueKeysWithValues: lines[1..<end].compactMap { line in
+            guard let separator = line.firstIndex(of: ":") else { return nil }
+            let key = String(line[..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\\\""))
+            return key.isEmpty ? nil : (key, value)
+        })
+    }
     private static func date(_ value: String?) -> Date? { guard let value else { return nil }; let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; if let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) { return date }; let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"; return formatter.date(from: value) }
 }
 private enum RegistryError: LocalizedError { case missing(String), unreadable; var errorDescription: String? { switch self { case .missing(let path): "The governed project registry was not found at \(path)."; case .unreadable: "The governed project registry could not be read." } } }
