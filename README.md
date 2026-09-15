@@ -21,6 +21,7 @@ missing or nonstandard, Settings opens with its best verified suggestions:
 
 - their installed `monday-thermo` plugin folder;
 - their recipient-owned Project Knowledge vault, containing `03 Projects`;
+- optionally, their private Personal Project Knowledge vault, containing its own `03 Projects` folder;
 - their Captain's Log at `Chris Knowledge/500 Personal Journal`;
 - MONDAY's Research Journal at `Monday Knowledge/500 Research Journal`;
 - optionally, a local JSON file exported by the Codex Planner skill.
@@ -51,7 +52,9 @@ xcodebuild -project MondayCommandCenter.xcodeproj \
    open it from Applications.
 3. On first launch, Command Center pairs automatically when it finds the
    standard installed plugin and vault. Otherwise, choose the suggested paths
-   in **Settings**. The two journal locations are separate read-only settings.
+   in **Settings**. Personal Project Knowledge is an optional, private setting:
+   it remains separate from Project Knowledge and is not reported to JARVIS.
+   The two journal locations are separate read-only settings.
 4. Connect the calendar in Codex, then have the Planner skill export the
    bounded daily plan to a local JSON file. Run the local MONDAY Planning
    Pipeline to reconcile it with authorized project and operations records.

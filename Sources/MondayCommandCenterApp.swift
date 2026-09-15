@@ -14,12 +14,13 @@ struct MondayCommandCenterApp: App {
 }
 
 private enum CommandCenterRoom: String, CaseIterable, Identifiable {
-    case today, portfolio, continuity, journal, researchJournal, planner
+    case today, projects, personalProjects, continuity, journal, researchJournal, planner
     var id: String { rawValue }
     var title: String {
         switch self {
         case .today: "Today"
-        case .portfolio: "Portfolio"
+        case .projects: "Projects"
+        case .personalProjects: "Personal Projects"
         case .continuity: "Meeting Continuity"
         case .journal: "Captain's Log"
         case .researchJournal: "Research Journal"
@@ -29,7 +30,8 @@ private enum CommandCenterRoom: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .today: "rectangle.grid.2x2.fill"
-        case .portfolio: "point.3.connected.trianglepath.dotted"
+        case .projects: "point.3.connected.trianglepath.dotted"
+        case .personalProjects: "person.crop.circle.badge.checkmark"
         case .continuity: "checklist.checked"
         case .journal: "book.closed.fill"
         case .researchJournal: "text.book.closed.fill"
@@ -71,7 +73,8 @@ private struct MondayCommandCenterShell: View {
     @ViewBuilder private var roomContent: some View {
         switch room {
         case .today: CommandCenterDashboard(room: $room)
-        case .portfolio: CommandCenterView()
+        case .projects: CommandCenterView()
+        case .personalProjects: PersonalProjectsRoom()
         case .continuity: MeetingContinuityRoom()
         case .journal: VaultTomeRoom(title: "Captain's Log", subtitle: "Your personal journal, read from Chris Knowledge.", rootURL: pairing.captainsLogURL, emptyTitle: "No Captain's Log entries are available")
         case .researchJournal: VaultTomeRoom(title: "Research Journal", subtitle: "MONDAY's research journal, read from Monday Knowledge.", rootURL: pairing.researchJournalURL, emptyTitle: "No MONDAY research-journal entries are available")
@@ -85,17 +88,18 @@ private struct CommandCenterDashboard: View {
     @StateObject private var projects = ProjectStore()
     @StateObject private var calendar = CalendarStore()
     @StateObject private var weather = WeatherStore()
-    @AppStorage("weatherLocation") private var weatherLocation = ""
-    @State private var search = ""
+    @StateObject private var planner = DailyPlannerFeed()
+    @ObservedObject private var pairing = CommandCenterPairing.shared
 
-    private var visibleProjects: [Project] {
-        guard !search.isEmpty else { return projects.projects }
-        return projects.projects.filter {
-            $0.title.localizedCaseInsensitiveContains(search)
-                || ($0.stage?.localizedCaseInsensitiveContains(search) ?? false)
-                || ($0.nextAction?.localizedCaseInsensitiveContains(search) ?? false)
-        }
-    }
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "America/New_York")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+    private var todayKey: String { Self.dateFormatter.string(from: .now) }
 
     var body: some View {
         ZStack {
@@ -104,7 +108,6 @@ private struct CommandCenterDashboard: View {
                 VStack(alignment: .leading, spacing: 22) {
                     masthead
                     commandDeck
-                    portfolioSection
                     provenanceNote
                 }
                 .padding(.horizontal, 34)
@@ -113,7 +116,22 @@ private struct CommandCenterDashboard: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task { await projects.reload(); await calendar.reloadToday() }
+        .task {
+            while !Task.isCancelled {
+                await refreshDeck()
+                do { try await Task.sleep(for: .seconds(1800)) }
+                catch { return }
+            }
+        }
+        .task(id: pairing.weatherAddress) {
+            let address = pairing.weatherAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !address.isEmpty else { return }
+            while !Task.isCancelled {
+                await weather.refresh(for: address)
+                do { try await Task.sleep(for: .seconds(900)) }
+                catch { return }
+            }
+        }
     }
 
     private var masthead: some View {
@@ -132,26 +150,11 @@ private struct CommandCenterDashboard: View {
             }
             Spacer(minLength: 20)
             HStack(spacing: 10) {
-                Menu {
-                    Picker("Rooms", selection: $room) {
-                        ForEach(CommandCenterRoom.allCases) { room in Label(room.title, systemImage: room.icon).tag(room) }
-                    }
-                } label: {
-                    Label("Rooms", systemImage: "square.grid.2x2")
+                Button { room = .projects } label: {
+                    Label("Projects", systemImage: "point.3.connected.trianglepath.dotted")
                 }
-                .buttonStyle(CommandButtonStyle(prominent: true))
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.55))
-                    TextField("Find a project", text: $search)
-                        .textFieldStyle(.plain)
-                        .frame(width: 200)
-                        .foregroundStyle(.white)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 11))
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(.white.opacity(0.13), lineWidth: 1))
-                Button { Task { await projects.reload() } } label: {
+                .buttonStyle(CommandButtonStyle(prominent: false))
+                Button { Task { await refreshDeck() } } label: {
                     Label(projects.loading ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(CommandButtonStyle(prominent: false))
@@ -161,61 +164,102 @@ private struct CommandCenterDashboard: View {
         .padding(.vertical, 24)
     }
 
-    private var commandDeck: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .lastTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("TODAY'S COMMAND DECK")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .tracking(1.5)
-                        .foregroundStyle(.white.opacity(0.48))
-                    Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
-                        .font(.system(size: 23, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                }
-                Spacer()
-                Text("Live where connected · explicit where not")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.48))
-            }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 285), spacing: 14)], spacing: 14) {
-                DaySignalsCard(projects: projects.projects, isLoading: projects.loading)
-                WeatherCard(store: weather, location: $weatherLocation)
-                CalendarSignalsCard(store: calendar)
-                ConversationHandoffCard()
-            }
-        }
+    private func refreshDeck() async {
+        await projects.reload()
+        await calendar.reloadToday()
+        await planner.refresh(for: todayKey)
+        let address = pairing.weatherAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !address.isEmpty { await weather.refresh(for: address) }
     }
 
-    private var portfolioSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .lastTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("PROJECT CONTEXT")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .tracking(1.5)
-                        .foregroundStyle(.white.opacity(0.48))
-                    Text("What MONDAY is holding with you")
-                        .font(.system(size: 22, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
+    private var commandDeck: some View {
+        ZStack {
+            CommandDeckWeatherBackdrop(snapshot: weather.snapshot)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("TODAY'S COMMAND DECK")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .tracking(1.5)
+                            .foregroundStyle(.white.opacity(0.55))
+                        Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                            .font(.system(size: 25, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text(deckPosture)
+                            .font(.system(size: 16, weight: .medium, design: .serif))
+                            .foregroundStyle(.white.opacity(0.84))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 18)
+                    AmbientWeatherStatus(snapshot: weather.snapshot, configured: !pairing.weatherAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                Spacer()
-                HStack(spacing: 12) {
-                    Legend(label: "Ready", color: DashboardPalette.green)
-                    Legend(label: "Watch", color: DashboardPalette.amber)
-                    Legend(label: "Attention", color: DashboardPalette.red)
+
+                HStack(alignment: .top, spacing: 14) {
+                    CommandDeckPanel(eyebrow: "TODAY'S COMMANDS", title: "The few moves that matter", icon: "flag.checkered") {
+                        CommandDeckLines(items: primaryCommands, empty: "No approved daily priorities were supplied. Open Planner to refresh MONDAY's daily brief.")
+                        Button { room = .planner } label: { Label("Open Planner", systemImage: "arrow.right") }
+                            .buttonStyle(CommandButtonStyle(prominent: true))
+                    }
+                    CommandDeckPanel(eyebrow: "NEEDS YOUR JUDGMENT", title: "MONDAY will not decide these for you", icon: "person.crop.circle.badge.questionmark") {
+                        CommandDeckLines(items: judgmentItems, empty: "No recorded project judgment is waiting. That does not prove every project is current.")
+                        Button { room = .projects } label: { Label("Review projects", systemImage: "arrow.right") }
+                            .buttonStyle(CommandButtonStyle(prominent: false))
+                    }
                 }
+
+                HStack(alignment: .top, spacing: 14) {
+                    CommandDeckPanel(eyebrow: "RISKS & OPEN LOOPS", title: "What should not quietly slip", icon: "exclamationmark.triangle") {
+                        CommandDeckLines(items: riskItems, empty: "No risk list was supplied with this planning brief. Meeting Continuity remains separately governed.")
+                        Button { room = .continuity } label: { Label("Open continuity", systemImage: "arrow.right") }
+                            .buttonStyle(CommandButtonStyle(prominent: false))
+                    }
+                    CommandDeckPanel(eyebrow: "MONDAY'S READ", title: "A brief, evidence-bounded posture", icon: "sparkles") {
+                        Text(mondayRead)
+                            .font(.system(size: 13, design: .serif))
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(sourceHealthLine)
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.46))
+                    }
+                }
+
+                CommandDeckContextBar(calendar: calendar, planner: planner.plan)
             }
-            if let error = projects.error {
-                UnavailableCard(title: "Project registry unavailable", message: error, icon: "externaldrive.badge.exclamationmark")
-            } else if visibleProjects.isEmpty {
-                UnavailableCard(title: "No matching projects", message: "No project record matches that search.", icon: "magnifyingglass")
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 350), spacing: 14)], spacing: 14) {
-                    ForEach(visibleProjects) { project in ProjectContextCard(project: project) }
-                }
-            }
+            .padding(24)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(.white.opacity(0.15), lineWidth: 1))
+    }
+
+    private var primaryCommands: [String] {
+        if let priorities = planner.plan?.priorities.a, !priorities.isEmpty { return Array(priorities.prefix(3)) }
+        return calendar.events.prefix(3).map { "Honor \($0.timeLabel): \($0.title)" }
+    }
+
+    private var judgmentItems: [String] {
+        let attention = projects.projects.filter { ["intervention", "at-risk", "watch"].contains($0.health) }
+        if !attention.isEmpty { return attention.prefix(3).map { "\($0.title): \($0.nextAction ?? $0.gateSummary)" } }
+        let unknown = projects.projects.filter { $0.health == "unknown" }
+        return unknown.prefix(2).map { "\($0.title): recorded status has not been assessed" }
+    }
+
+    private var riskItems: [String] { Array(planner.plan?.brief?.risks.prefix(3) ?? []) }
+    private var mondayRead: String {
+        if let mission = planner.plan?.brief?.mission, !mission.isEmpty { return mission }
+        if let focus = planner.plan?.primaryFocus, !focus.isEmpty { return focus }
+        return "The current picture is intentionally limited to connected records. Refresh the Planner to prepare MONDAY's evidence-bounded daily posture."
+    }
+    private var deckPosture: String {
+        if let focus = planner.plan?.primaryFocus, !focus.isEmpty { return focus }
+        return "Protect commitments, then use evidence to choose the next move."
+    }
+    private var sourceHealthLine: String {
+        let sources = planner.plan?.sources ?? []
+        guard !sources.isEmpty else { return "Planner source health is not available yet." }
+        let available = sources.filter { $0.status == "available" }.count
+        return "\(available) of \(sources.count) planning sources available · details remain in Planner"
     }
 
     private var provenanceNote: some View {
@@ -259,7 +303,7 @@ private struct CommandRadar: View {
         let weatherDetail = weather.map { "\($0.place): \($0.temperature.formatted(.number.precision(.fractionLength(0))))° and \($0.condition.lowercased())." } ?? "Set a location when you want a live weather signal. Nothing is assumed."
         let calendarDetail = calendarConnected ? (calendarEvents.isEmpty ? "No remaining appointments are recorded today." : "\(calendarEvents.count) remaining appointment\(calendarEvents.count == 1 ? "" : "s"): " + calendarEvents.prefix(2).map(\.title).joined(separator: " · ")) : "Calendar remains private until you choose to connect it."
         return [
-            Reading(label: "PROJECTS", icon: "point.3.connected.trianglepath.dotted", color: DashboardPalette.red, title: "Portfolio signal", detail: projectDetail, destination: .portfolio),
+            Reading(label: "PROJECTS", icon: "point.3.connected.trianglepath.dotted", color: DashboardPalette.red, title: "Project signal", detail: projectDetail, destination: .projects),
             Reading(label: "WEATHER", icon: "cloud.sun.fill", color: DashboardPalette.accent, title: "Outside", detail: weatherDetail, destination: .today),
             Reading(label: "CALENDAR", icon: "calendar", color: DashboardPalette.green, title: "Today’s time", detail: calendarDetail, destination: .planner),
             Reading(label: "CAPTAIN’S LOG", icon: "book.closed.fill", color: DashboardPalette.amber, title: "Your MONDAY Journal", detail: "Your Personal Log is a read-only shelf of the things worth returning to.", destination: .journal),
@@ -362,7 +406,7 @@ private struct CommandRadarRoom: View {
         let weatherDetail = weather.snapshot.map { "\($0.place) · \($0.temperature.formatted(.number.precision(.fractionLength(0))))° · \($0.condition)" } ?? "Weather stays deliberately quiet until you set a location."
         let calendarDetail = calendar.state == .connected ? (calendar.events.isEmpty ? "No remaining appointments are recorded today." : "\(calendar.events.count) remaining appointment\(calendar.events.count == 1 ? "" : "s"): " + calendar.events.prefix(3).map(\.title).joined(separator: " · ")) : "Calendar remains private until you choose to connect it."
         return [
-            Reading(label: "PROJECTS", icon: "point.3.connected.trianglepath.dotted", color: DashboardPalette.red, title: "Portfolio signal", detail: projectDetail, destination: .portfolio),
+            Reading(label: "PROJECTS", icon: "point.3.connected.trianglepath.dotted", color: DashboardPalette.red, title: "Project signal", detail: projectDetail, destination: .projects),
             Reading(label: "WEATHER", icon: "cloud.sun.fill", color: DashboardPalette.accent, title: "Outside", detail: weatherDetail, destination: .today),
             Reading(label: "CALENDAR", icon: "calendar", color: DashboardPalette.green, title: "Today’s time", detail: calendarDetail, destination: .planner),
             Reading(label: "CAPTAIN’S LOG", icon: "book.closed.fill", color: DashboardPalette.amber, title: "Your MONDAY Journal", detail: "Your Personal Log is held as a private shelf of the things worth returning to.", destination: .journal),
@@ -510,6 +554,133 @@ private struct CommandRadarRoom: View {
         }
     }
 
+}
+
+private struct CommandDeckWeatherBackdrop: View {
+    let snapshot: WeatherSnapshot?
+
+    private var tint: Color {
+        guard let snapshot else { return DashboardPalette.accent }
+        switch snapshot.weatherCode {
+        case 61...67, 80...82, 95...99: return Color(red: 0.34, green: 0.56, blue: 0.82)
+        case 71...77, 85, 86: return Color(red: 0.63, green: 0.78, blue: 0.90)
+        case 0: return snapshot.isDaylight ? Color(red: 0.95, green: 0.67, blue: 0.28) : Color(red: 0.30, green: 0.45, blue: 0.75)
+        default: return DashboardPalette.accent
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            if let image = WeatherArtResource.image(for: snapshot?.artKey ?? "partly_cloudy_day") {
+                GeometryReader { proxy in
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .opacity(snapshot == nil ? 0.10 : 0.36)
+                }
+            }
+            LinearGradient(colors: [DashboardPalette.canvas.opacity(0.84), tint.opacity(0.25), DashboardPalette.canvas.opacity(0.93)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            LinearGradient(colors: [.black.opacity(0.05), DashboardPalette.canvas.opacity(0.48)], startPoint: .top, endPoint: .bottom)
+        }
+    }
+}
+
+private struct AmbientWeatherStatus: View {
+    let snapshot: WeatherSnapshot?
+    let configured: Bool
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 5) {
+            if let snapshot {
+                Label("LIVE WEATHER", systemImage: snapshot.isDaylight ? "cloud.sun.fill" : "cloud.moon.fill")
+                    .font(.system(size: 9, weight: .bold, design: .rounded)).tracking(1.1).foregroundStyle(.white.opacity(0.58))
+                Text("\(snapshot.temperature.formatted(.number.precision(.fractionLength(0))))°F · \(snapshot.condition)")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.90))
+                Text(snapshot.place).font(.system(size: 10)).foregroundStyle(.white.opacity(0.52))
+            } else {
+                Label(configured ? "WEATHER UNAVAILABLE" : "WEATHER OFF", systemImage: "cloud")
+                    .font(.system(size: 9, weight: .bold, design: .rounded)).tracking(1.1).foregroundStyle(.white.opacity(0.48))
+                Text(configured ? "Refresh to retry" : "Set an address in Settings")
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.52))
+            }
+        }
+        .multilineTextAlignment(.trailing)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.10), lineWidth: 1))
+    }
+}
+
+private struct CommandDeckPanel<Content: View>: View {
+    let eyebrow: String
+    let title: String
+    let icon: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(eyebrow).font(.system(size: 9, weight: .bold, design: .rounded)).tracking(1.15).foregroundStyle(.white.opacity(0.48))
+                    Text(title).font(.system(size: 17, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                }
+                Spacer()
+                Image(systemName: icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(DashboardPalette.accent)
+            }
+            content
+        }
+        .frame(maxWidth: .infinity, minHeight: 178, alignment: .topLeading)
+        .padding(18)
+        .background(.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.11), lineWidth: 1))
+    }
+}
+
+private struct CommandDeckLines: View {
+    let items: [String]
+    let empty: String
+
+    var body: some View {
+        if items.isEmpty {
+            Text(empty).font(.system(size: 12)).foregroundStyle(.white.opacity(0.56)).fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(index + 1)").font(.system(size: 9, weight: .black, design: .rounded)).foregroundStyle(DashboardPalette.accent).frame(width: 14, alignment: .leading)
+                        Text(item).font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.83)).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CommandDeckContextBar: View {
+    @ObservedObject var calendar: CalendarStore
+    let planner: DailyPlannerPlan?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Label(nextCalendarText, systemImage: "calendar")
+            Divider().overlay(.white.opacity(0.16))
+            Label(planner == nil ? "Planner brief awaiting refresh" : "Planner prepared \(planner!.generatedAt.formatted(date: .omitted, time: .shortened))", systemImage: "clock")
+            Divider().overlay(.white.opacity(0.16))
+            Label("Evidence and judgment remain distinct", systemImage: "checkmark.shield")
+        }
+        .font(.system(size: 10, weight: .medium, design: .rounded))
+        .foregroundStyle(.white.opacity(0.58))
+        .lineLimit(1)
+        .padding(.horizontal, 13).padding(.vertical, 10)
+        .background(.black.opacity(0.16), in: Capsule())
+    }
+
+    private var nextCalendarText: String {
+        guard let next = calendar.events.first else { return "No calendar item returned" }
+        return "Scheduled: \(next.timeLabel) · \(next.title)"
+    }
 }
 
 private struct DaySignalsCard: View {
@@ -796,7 +967,7 @@ private struct WeatherArtwork: View {
             RoundedRectangle(cornerRadius: 14)
                 .fill(DashboardPalette.accent.opacity(dimmed ? 0.05 : 0.10))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(DashboardPalette.accent.opacity(dimmed ? 0.12 : 0.22), lineWidth: 1))
-            if let image = NSImage(named: key) ?? bundledImage {
+            if let image = NSImage(named: key) ?? WeatherArtResource.image(for: key) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
@@ -811,7 +982,10 @@ private struct WeatherArtwork: View {
         .accessibilityLabel("Weather illustration")
     }
 
-    private var bundledImage: NSImage? {
+}
+
+private enum WeatherArtResource {
+    static func image(for key: String) -> NSImage? {
         guard let url = Bundle.main.url(forResource: key, withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
     }
@@ -1091,12 +1265,26 @@ private enum PlannerFeedReader {
     }
 }
 
+private enum PlannerArchive {
+    static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/monday-planner/history", isDirectory: true)
+    static func url(for date: String) -> URL { root.appendingPathComponent("\(date).json") }
+    static func savedDates(currentPlanURL: URL?) -> [String] {
+        let archived = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        var dates = Set(archived.compactMap { url -> String? in
+            guard url.pathExtension == "json" else { return nil }
+            return String(url.deletingPathExtension().lastPathComponent)
+        })
+        if let currentPlanURL, let current = try? PlannerFeedReader.load(from: currentPlanURL) { dates.insert(current.date) }
+        return dates.sorted(by: >)
+    }
+}
+
 @MainActor
 private final class DailyPlannerFeed: ObservableObject {
     @Published private(set) var plan: DailyPlannerPlan?
-    @Published private(set) var message = "Reading today's MONDAY plan…"
+    @Published private(set) var message = "Reading the MONDAY plan…"
 
-    func refresh() async {
+    func refresh(for requestedDate: String) async {
         plan = nil
         guard let url = CommandCenterPairing.shared.plannerFeedURL else {
             message = "Choose the Planner shared-plan JSON in Settings. The Codex Planner skill writes it, and Command Center reads it without calendar credentials."
@@ -1104,21 +1292,29 @@ private final class DailyPlannerFeed: ObservableObject {
         }
         do {
             let candidate = try PlannerFeedReader.load(from: url)
-            guard candidate.isCurrentForLocalDay else {
-                message = "The selected Planner plan is dated \(candidate.date), not today. Refresh it in Codex before Command Center presents it as a daily plan."
-                return
-            }
-            plan = candidate
+            let source = candidate.date == requestedDate ? url : PlannerArchive.url(for: requestedDate)
+            let selected = source == url ? candidate : try PlannerFeedReader.load(from: source)
+            guard selected.date == requestedDate else { throw CocoaError(.fileReadCorruptFile) }
+            plan = selected
             message = ""
         } catch {
-            message = "The selected Planner shared plan could not be read: \(error.localizedDescription)"
+            message = "No saved calendar plan is available for \(requestedDate). MONDAY will show only dates that have been archived by the planning pipeline."
         }
     }
 }
 
 private struct PlannerRoom: View {
     @StateObject private var planner = DailyPlannerFeed()
+    @StateObject private var meetingNotes = MeetingNoteIndex()
     @AppStorage("dailyFocus") private var dailyFocus = ""
+    @State private var selectedDate = Calendar.current.startOfDay(for: .now)
+    @State private var showingCalendar = false
+    @State private var selectedNote: MeetingNote?
+    @State private var isRefreshing = false
+    private var dateKey: String { Self.dateFormatter.string(from: selectedDate) }
+    private var displayDate: String { planner.plan?.date ?? dateKey }
+    private static let dateFormatter: DateFormatter = { let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "America/New_York"); formatter.dateFormat = "yyyy-MM-dd"; return formatter }()
+    private static let titleFormatter: DateFormatter = { let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.locale = Locale(identifier: "en_US"); formatter.timeZone = TimeZone(identifier: "America/New_York"); formatter.dateFormat = "EEEE, MMMM d, yyyy"; return formatter }()
     var body: some View {
         ZStack {
             PlannerPaper.background.ignoresSafeArea()
@@ -1127,7 +1323,31 @@ private struct PlannerRoom: View {
                     HStack(alignment: .top, spacing: 22) {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("DAILY PLANNING PAGE").font(.system(size: 11, weight: .black, design: .rounded)).tracking(1.5).foregroundStyle(PlannerPaper.ink.opacity(0.72))
-                            Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day().year())).font(.system(size: 29, weight: .semibold, design: .serif)).foregroundStyle(PlannerPaper.ink)
+                            HStack(spacing: 12) {
+                                Text(Self.titleFormatter.string(from: selectedDate)).font(.system(size: 29, weight: .semibold, design: .serif)).foregroundStyle(PlannerPaper.ink)
+                                Button { showingCalendar = true } label: {
+                                    Label("Calendar", systemImage: "calendar")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundStyle(PlannerPaper.ink)
+                                        .padding(.horizontal, 11)
+                                        .padding(.vertical, 8)
+                                        .background(PlannerPaper.ink.opacity(0.12), in: Capsule())
+                                        .overlay(Capsule().stroke(PlannerPaper.ink.opacity(0.34), lineWidth: 1))
+                                }
+                                .buttonStyle(.plain).help("Open saved calendar")
+                                Button { Task { await refreshPage() } } label: {
+                                    Label(isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .foregroundStyle(PlannerPaper.ink)
+                                        .padding(.horizontal, 11)
+                                        .padding(.vertical, 8)
+                                        .background(PlannerPaper.ink.opacity(0.12), in: Capsule())
+                                        .overlay(Capsule().stroke(PlannerPaper.ink.opacity(0.34), lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isRefreshing)
+                                .help("Refresh the saved planner and meeting notes")
+                            }
                             if let plan = planner.plan {
                                 Text("Prepared \(plan.generatedAt.formatted(date: .omitted, time: .shortened)) · \(plan.sourceSummary)")
                                     .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -1146,7 +1366,7 @@ private struct PlannerRoom: View {
                     }
                     .padding(30)
                     HStack(alignment: .top, spacing: 0) {
-                        MacPlannerSchedule(plan: planner.plan).frame(maxWidth: .infinity, alignment: .topLeading)
+                        MacPlannerSchedule(plan: planner.plan, selectedDate: displayDate, noteIndex: meetingNotes) { selectedNote = $0 }.frame(maxWidth: .infinity, alignment: .topLeading)
                         MacPlannerTaskList(plan: planner.plan).frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                     HStack(alignment: .top, spacing: 0) {
@@ -1162,12 +1382,32 @@ private struct PlannerRoom: View {
                 .frame(maxWidth: 1160)
             }
         }
-        .task { await planner.refresh() }
+        .sheet(isPresented: $showingCalendar) { SavedCalendarSheet(selectedDate: $selectedDate, savedDates: PlannerArchive.savedDates(currentPlanURL: CommandCenterPairing.shared.plannerFeedURL)) }
+        .sheet(item: $selectedNote) { MeetingNoteSheet(note: $0) }
+        .task(id: dateKey) {
+            while !Task.isCancelled {
+                await refreshPage()
+                do { try await Task.sleep(for: .seconds(1800)) }
+                catch { return }
+            }
+        }
+    }
+
+    private func refreshPage() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        await planner.refresh(for: dateKey)
+        meetingNotes.reload()
     }
 }
 
 private struct MacPlannerSchedule: View {
     let plan: DailyPlannerPlan?
+    let selectedDate: String
+    @ObservedObject var noteIndex: MeetingNoteIndex
+    let openNote: (MeetingNote) -> Void
+    @State private var unmappedTitle: String?
     private var schedule: [PlannerScheduleItem] { (plan?.schedule ?? []).sorted { $0.time < $1.time } }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1179,30 +1419,50 @@ private struct MacPlannerSchedule: View {
             } else {
                 ForEach(Array(schedule.enumerated()), id: \.offset) { _, item in
                     let eventColor = PlannerEventColor.forTitle(item.title)
-                    HStack(alignment: .center, spacing: 9) {
-                        Capsule().fill(eventColor).frame(width: 5)
-                        Text("\(displayTime(item.time))–\(displayTime(item.end))")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(eventColor.opacity(0.95))
-                            .frame(width: 106, alignment: .trailing)
-                        Text(item.title)
-                            .font(.system(size: 12, weight: .medium, design: .serif))
-                            .fixedSize(horizontal: false, vertical: true)
+                    let note = noteIndex.note(for: selectedDate, title: item.title)
+                    Button { if let note { openNote(note) } else { unmappedTitle = item.title } } label: {
+                        HStack(alignment: .center, spacing: 9) {
+                            Capsule().fill(eventColor).frame(width: 5)
+                            Text("\(displayTime(item.time))–\(displayTime(item.end))").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(eventColor.opacity(0.95)).frame(width: 106, alignment: .trailing)
+                            Text(item.title).font(.system(size: 12, weight: .medium, design: .serif)).fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 6)
+                            Image(systemName: note == nil ? "doc.badge.questionmark" : "doc.text.fill").font(.system(size: 11)).foregroundStyle(note == nil ? PlannerPaper.ink.opacity(0.38) : eventColor)
+                        }
+                        .foregroundStyle(PlannerPaper.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(eventColor.opacity(0.105), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     }
-                    .foregroundStyle(PlannerPaper.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(eventColor.opacity(0.105), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 2)
+                    .buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 2)
                 }
                 .padding(.bottom, 12)
             }
         }
+        .alert("No mapped meeting note", isPresented: Binding(get: { unmappedTitle != nil }, set: { if !$0 { unmappedTitle = nil } })) { Button("OK", role: .cancel) {} } message: { Text("\(unmappedTitle ?? "This meeting") does not have a governed note in Meeting Notes yet.") }
     }
 
     private func displayTime(_ time: String) -> String { let pieces = time.split(separator: ":"); guard let hour = Int(pieces[0]), let minute = pieces.last else { return time }; let shown = hour > 12 ? hour - 12 : hour; return "\(shown):\(minute) \(hour >= 12 ? "PM" : "AM")" }
+}
+
+private struct SavedCalendarSheet: View {
+    @Binding var selectedDate: Date
+    let savedDates: [String]
+    @Environment(\.dismiss) private var dismiss
+    @State private var candidate = Calendar.current.startOfDay(for: .now)
+    private static let formatter: DateFormatter = { let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "America/New_York"); formatter.dateFormat = "yyyy-MM-dd"; return formatter }()
+    private var candidateKey: String { Self.formatter.string(from: candidate) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("SAVED CALENDAR", systemImage: "calendar").font(.system(size: 12, weight: .black, design: .rounded)).tracking(1.1)
+            Text("Move through days, months, or years. Only dates with a saved MONDAY plan can be opened.").foregroundStyle(.secondary)
+            DatePicker("Calendar date", selection: $candidate, displayedComponents: .date).datePickerStyle(.graphical)
+            if savedDates.contains(candidateKey) { Label("A saved plan is available for \(candidateKey).", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            else { Label("No saved plan exists for \(candidateKey).", systemImage: "questionmark.circle").foregroundStyle(.secondary) }
+            Divider()
+            Text("RECENTLY SAVED").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1)
+            ScrollView { VStack(alignment: .leading, spacing: 6) { ForEach(savedDates.prefix(20), id: \.self) { date in Button(date) { candidate = Self.formatter.date(from: date) ?? candidate }.buttonStyle(.plain) } } }.frame(maxHeight: 130, alignment: .topLeading)
+            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Open Date") { selectedDate = candidate; dismiss() }.buttonStyle(.borderedProminent).disabled(!savedDates.contains(candidateKey)) }
+        }
+        .padding(26).frame(width: 430)
+    }
 }
 
 private struct MacPlannerTaskList: View {
@@ -1269,10 +1529,10 @@ private struct MacPlannerCommandBrief: View {
                 HStack(alignment: .top, spacing: 0) {
                     BriefColumn(title: "PULL FORWARDS", items: brief.pullForwards, empty: "No pull-forwards were prepared.")
                     BriefColumn(title: "WATCH", items: brief.risks, empty: "No source or planning risks were reported.")
-                    PortfolioColumn(title: "WORK PORTFOLIO", items: brief.workPortfolio, empty: "No active work-project records were read.")
+                    PortfolioColumn(title: "WORK PROJECTS", items: brief.workPortfolio, empty: "No active work-project records were read.")
                 }
                 if !brief.personalPortfolio.isEmpty {
-                    PortfolioColumn(title: "PERSONAL PORTFOLIO", items: brief.personalPortfolio, empty: "")
+                    PortfolioColumn(title: "PERSONAL PROJECTS", items: brief.personalPortfolio, empty: "")
                         .padding(.horizontal, 16).padding(.bottom, 12)
                 }
                 SourceHealthRow(sources: brief.sourceHealth)
@@ -1517,20 +1777,24 @@ private struct WeatherSnapshot {
     let windSpeed: Double
     let weatherCode: Int
     let isDaylight: Bool
+    let moonPhase: MoonPhase
+    let hasTornadoWarning: Bool
     let updatedAt: Date
     var artKey: String {
+        if hasTornadoWarning { return "tornado" }
         switch weatherCode {
-        case 0: return isDaylight ? "clear_day" : "clear_night_no_moon"
-        case 1...3, 45, 48: return "partly_cloudy_day"
+        case 0: return isDaylight ? "clear_day" : moonPhase.artKey
+        case 1...3, 45, 48: return isDaylight ? "partly_cloudy_day" : moonPhase.artKey
         case 51...57, 61...63, 80, 81: return "light_rain"
         case 65...67, 82: return "heavy_rain"
         case 71...73, 85: return "light_snow"
-        case 75...77, 86: return "heavy_snow"
+        case 75...77, 86: return windSpeed >= 25 ? "blizzard" : "heavy_snow"
         case 95...99: return "thunderstorm"
         default: return "partly_cloudy_day"
         }
     }
     var condition: String {
+        if hasTornadoWarning { return "Tornado warning" }
         switch weatherCode {
         case 0: return "Clear"
         case 1...3: return "Partly cloudy"
@@ -1540,6 +1804,33 @@ private struct WeatherSnapshot {
         case 95...99: return "Thunderstorm"
         default: return "Conditions reported"
         }
+    }
+}
+
+private enum MoonPhase: CaseIterable {
+    case new, waxingCrescent, firstQuarter, waxingGibbous, full, waningGibbous, lastQuarter, waningCrescent
+
+    var artKey: String {
+        switch self {
+        case .new: "moon_new"
+        case .waxingCrescent: "moon_waxing_crescent"
+        case .firstQuarter: "moon_first_quarter"
+        case .waxingGibbous: "moon_waxing_gibbous"
+        case .full: "moon_full"
+        case .waningGibbous: "moon_waning_gibbous"
+        case .lastQuarter: "moon_last_quarter"
+        case .waningCrescent: "moon_waning_crescent"
+        }
+    }
+
+    static func current(at date: Date) -> MoonPhase {
+        let calendar = Calendar(identifier: .gregorian)
+        let reference = calendar.date(from: DateComponents(calendar: calendar, timeZone: TimeZone(secondsFromGMT: 0), year: 2000, month: 1, day: 6, hour: 18, minute: 14))!
+        let synodicMonth = 29.530588853 * 86_400
+        let progress = (date.timeIntervalSince(reference) / synodicMonth).truncatingRemainder(dividingBy: 1)
+        let normalized = progress < 0 ? progress + 1 : progress
+        let index = Int((normalized * Double(allCases.count) + 0.5).rounded(.down)) % allCases.count
+        return allCases[index]
     }
 }
 
@@ -1562,7 +1853,8 @@ private final class WeatherStore: ObservableObject {
             guard let forecastURL = URL(string: "https://api.open-meteo.com/v1/forecast?latitude=\(result.latitude)&longitude=\(result.longitude)&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day&temperature_unit=fahrenheit&wind_speed_unit=mph") else { throw WeatherError.unavailable }
             let (forecastData, _) = try await URLSession.shared.data(from: forecastURL)
             let forecast = try JSONDecoder().decode(ForecastResponse.self, from: forecastData)
-            snapshot = WeatherSnapshot(place: [result.name, result.admin1].compactMap { $0 }.joined(separator: ", "), temperature: forecast.current.temperature2m, apparentTemperature: forecast.current.apparentTemperature, windSpeed: forecast.current.windSpeed10m, weatherCode: forecast.current.weatherCode, isDaylight: forecast.current.isDay == 1, updatedAt: .now)
+            async let tornadoWarning = TornadoAlertDetector.hasActiveWarning(latitude: result.latitude, longitude: result.longitude, countryCode: result.countryCode)
+            snapshot = WeatherSnapshot(place: [result.name, result.admin1].compactMap { $0 }.joined(separator: ", "), temperature: forecast.current.temperature2m, apparentTemperature: forecast.current.apparentTemperature, windSpeed: forecast.current.windSpeed10m, weatherCode: forecast.current.weatherCode, isDaylight: forecast.current.isDay == 1, moonPhase: MoonPhase.current(at: .now), hasTornadoWarning: await tornadoWarning, updatedAt: .now)
             error = nil
         } catch let weatherError {
             error = weatherError.localizedDescription
@@ -1571,8 +1863,31 @@ private final class WeatherStore: ObservableObject {
 }
 
 private struct GeocodeResponse: Decodable { let results: [GeocodeResult]? }
-private struct GeocodeResult: Decodable { let name: String; let admin1: String?; let latitude: Double; let longitude: Double }
+private struct GeocodeResult: Decodable { let name: String; let admin1: String?; let countryCode: String?; let latitude: Double; let longitude: Double; enum CodingKeys: String, CodingKey { case name, admin1, latitude, longitude; case countryCode = "country_code" } }
 private struct ForecastResponse: Decodable { let current: CurrentWeather; struct CurrentWeather: Decodable { let temperature2m: Double; let apparentTemperature: Double; let weatherCode: Int; let windSpeed10m: Double; let isDay: Int; enum CodingKeys: String, CodingKey { case temperature2m = "temperature_2m"; case apparentTemperature = "apparent_temperature"; case weatherCode = "weather_code"; case windSpeed10m = "wind_speed_10m"; case isDay = "is_day" } } }
+
+private enum TornadoAlertDetector {
+    static func hasActiveWarning(latitude: Double, longitude: Double, countryCode: String?) async -> Bool {
+        guard countryCode?.uppercased() == "US",
+              let url = URL(string: "https://api.weather.gov/alerts/active?point=\(latitude),\(longitude)") else { return false }
+        var request = URLRequest(url: url)
+        request.setValue("MONDAY Command Center weather status", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let alerts = try? JSONDecoder().decode(NWSAlertResponse.self, from: data) else { return false }
+        return alerts.features.contains { feature in
+            feature.properties.status.caseInsensitiveCompare("Actual") == .orderedSame && feature.properties.event.localizedCaseInsensitiveContains("tornado")
+        }
+    }
+}
+
+private struct NWSAlertResponse: Decodable {
+    struct Feature: Decodable { let properties: Properties }
+    struct Properties: Decodable { let event: String; let status: String }
+    let features: [Feature]
+}
 private enum WeatherError: LocalizedError { case invalidLocation, unavailable; var errorDescription: String? { switch self { case .invalidLocation: "That location could not be found. Try city and state or region."; case .unavailable: "Weather is unavailable right now." } } }
 
 private struct DayEvent: Identifiable {

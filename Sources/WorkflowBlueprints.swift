@@ -82,6 +82,6 @@ enum WorkflowBlueprints {
         .init(key: "SEQUENCE", name: "Capacity & Sequencing", purpose: "Convert ambition into an executable order.", stops: ["Bounded capacity and work-in-progress limit", "Near-term milestones and dependencies"]),
         .init(key: "EXECUTE", name: "Execution Cadence", purpose: "Move the few right things consistently.", stops: ["Named owners and next actions", "Weekly operating rhythm and escalation path"]),
         .init(key: "REVIEW", name: "Operating Review", purpose: "Inspect reality and make decisions.", stops: ["Evidence-backed weekly/monthly review", "Blocked, deferred, and completed work disposition"]),
-        .init(key: "RESET", name: "Portfolio Reset", purpose: "Recommit or stop work intentionally.", stops: ["Quarterly priority and capacity decision", "Archive, pause, or recommit record"])
+        .init(key: "RESET", name: "Portfolio Decision", purpose: "Deliberately recommit, pause, archive, or stop work.", stops: ["Quarterly priority and capacity decision", "Archive, pause, or recommit record"])
     ])
 }

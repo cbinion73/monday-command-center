@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CommandCenterView: View {
     @StateObject private var store = ProjectStore()
+    @StateObject private var workflows = ProjectWorkflowStore()
     @State private var search = ""
     @State private var selectedProject: Project?
     @State private var collapsedTypes: Set<String> = []
@@ -25,25 +26,25 @@ struct CommandCenterView: View {
     var body: some View {
         Group {
             if let selectedProject {
-                ProjectDetailView(project: selectedProject) { self.selectedProject = nil }
+                ProjectDetailView(project: selectedProject, workflow: workflows.plan(for: selectedProject.id)) { self.selectedProject = nil }
             } else {
                 portfolioView
             }
         }
-        .preferredColorScheme(.light)
-        .task { await store.reload() }
+        .preferredColorScheme(.dark)
+        .task { await store.reload(); await workflows.reload() }
         .task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
+                try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled else { return }
-                await store.reload()
+                await store.reload(); await workflows.reload()
             }
         }
     }
 
     private var portfolioView: some View {
         ZStack {
-            Color(red: 0.961, green: 0.973, blue: 0.988).ignoresSafeArea()
+            DashboardPalette.canvas.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 0) {
                     masthead
@@ -60,7 +61,7 @@ struct CommandCenterView: View {
     private var masthead: some View {
         HStack(alignment: .center, spacing: 24) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("MONDAY COMMAND CENTER").font(.system(size: 11, weight: .bold, design: .rounded)).tracking(1.7).foregroundStyle(Color(red: 0.55, green: 0.77, blue: 1.0))
+                Text("MONDAY COMMAND CENTER").font(.system(size: 11, weight: .bold, design: .rounded)).tracking(1.7).foregroundStyle(DashboardPalette.accent)
                 Text("The big picture, honestly.").font(.system(size: 31, weight: .semibold, design: .rounded)).foregroundStyle(.white)
                 Text("A shared map of what is moving, what needs evidence, and what needs your judgment.").font(.system(size: 13)).foregroundStyle(Color.white.opacity(0.72))
             }
@@ -71,19 +72,20 @@ struct CommandCenterView: View {
                     TextField("Search projects", text: $search).textFieldStyle(.plain).frame(minWidth: 200).foregroundStyle(.white)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10).background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.20), lineWidth: 0.7))
-                Button { Task { await store.reload() } } label: { Label(store.loading ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise") }
+                Button { Task { await store.reload(); await workflows.reload() } } label: { Label(store.loading ? "Refreshing…" : "Refresh", systemImage: "arrow.clockwise") }
                     .buttonStyle(.bordered).tint(.white).foregroundStyle(.white).disabled(store.loading)
             }
         }
         .padding(.horizontal, 42).padding(.vertical, 25)
-        .background(LinearGradient(colors: [Color(red: 0.024, green: 0.090, blue: 0.165), Color(red: 0.035, green: 0.165, blue: 0.286)], startPoint: .topLeading, endPoint: .bottomTrailing))
+        .background(DashboardPalette.card, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.10), lineWidth: 1))
     }
 
     private var portfolioHeader: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("PORTFOLIO ROUTES").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(.secondary)
-                Text("Projects I’m holding with you").font(.system(size: 21, weight: .semibold, design: .rounded))
+                Text("WORK PROJECTS").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(DashboardPalette.accent)
+                Text("Projects I’m holding with you").font(.system(size: 21, weight: .semibold, design: .rounded)).foregroundStyle(.white)
             }
             Spacer()
             HStack(spacing: 15) { Legend(label: "Ready", color: .green); Legend(label: "Active", color: .blue); Legend(label: "Your judgment", color: .orange); Legend(label: "Needs attention", color: .red) }
@@ -107,19 +109,19 @@ struct CommandCenterView: View {
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(.blue)
                                 .frame(width: 12)
-                            Text(group.title.uppercased()).font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.3).foregroundStyle(.secondary)
-                            Text("\(group.projects.count)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.secondary).padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.06), in: Capsule())
+                            Text(group.title.uppercased()).font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.3).foregroundStyle(.white.opacity(0.58))
+                            Text("\(group.projects.count)").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.62)).padding(.horizontal, 6).padding(.vertical, 2).background(.white.opacity(0.08), in: Capsule())
                             Spacer()
                             Text(collapsedTypes.contains(group.id) ? "Expand" : "Collapse")
                                 .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.white.opacity(0.52))
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(collapsedTypes.contains(group.id) ? "Expand" : "Collapse") \(group.title)")
                     if !collapsedTypes.contains(group.id) {
-                        ForEach(group.projects) { project in Button { selectedProject = project } label: { ProjectRouteRow(project: project) }.buttonStyle(.plain) }
+                        ForEach(group.projects) { project in Button { selectedProject = project } label: { ProjectRouteRow(project: project, workflow: workflows.plan(for: project.id)) }.buttonStyle(.plain) }
                     }
                 }
             }
@@ -128,8 +130,8 @@ struct CommandCenterView: View {
 
     private var truthNote: some View {
         HStack(spacing: 9) {
-            Image(systemName: "checkmark.shield").foregroundStyle(.blue)
-            Text("Routes show the recorded stage, next milestone, and gate. Evidence, approval, and human judgment remain distinct; unknown information stays unknown.").font(.system(size: 11)).foregroundStyle(.secondary)
+            Image(systemName: "checkmark.shield").foregroundStyle(DashboardPalette.accent)
+            Text("Routes show the recorded stage, next milestone, and gate. Evidence, approval, and human judgment remain distinct; unknown information stays unknown.").font(.system(size: 11)).foregroundStyle(.white.opacity(0.58))
         }.padding(.horizontal, 8).padding(.top, 4)
     }
 
@@ -138,43 +140,184 @@ struct CommandCenterView: View {
     }
 }
 
-private struct ProjectRouteRow: View {
-    let project: Project
+struct PersonalProjectsRoom: View {
+    @StateObject private var store = PersonalProjectStore()
+    @State private var search = ""
+    @State private var selectedProject: Project?
+
+    private var visibleProjects: [Project] {
+        guard !search.isEmpty else { return store.projects }
+        return store.projects.filter {
+            $0.title.localizedCaseInsensitiveContains(search) ||
+            ($0.stage?.localizedCaseInsensitiveContains(search) ?? false) ||
+            ($0.milestone?.localizedCaseInsensitiveContains(search) ?? false)
+        }
+    }
+
     var body: some View {
-        ContentCard { HStack(spacing: 22) {
-            VStack(alignment: .leading, spacing: 5) { Text(project.title).font(.system(size: 16, weight: .semibold, design: .rounded)); HStack(spacing: 6) { Text(project.healthLabel.capitalized); Text("·"); Text(project.gateSummary) }.font(.system(size: 11)).foregroundStyle(.secondary) }.frame(width: 220, alignment: .leading)
-            RouteMap(project: project).frame(maxWidth: .infinity)
-            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(.tertiary)
-        }.frame(minHeight: 108) }
+        Group {
+            if let selectedProject {
+                ProjectDetailView(project: selectedProject, workflow: nil) { self.selectedProject = nil }
+            } else {
+                room
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task { await store.reload() }
+    }
+
+    private var room: some View {
+        ZStack {
+            DashboardPalette.canvas.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    header
+                    if let error = store.error {
+                        ContentCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label("PERSONAL PROJECT KNOWLEDGE", systemImage: "lock.shield")
+                                    .font(.system(size: 11, weight: .black, design: .rounded))
+                                    .tracking(1.1).foregroundStyle(DashboardPalette.accent)
+                                Text("Personal Projects is ready when you are.")
+                                    .font(.system(size: 22, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                                Text(error).font(.system(size: 14)).foregroundStyle(.white.opacity(0.66))
+                                Text("This private source is intentionally separate from Project Knowledge and is never reported to JARVIS.")
+                                    .font(.system(size: 12)).foregroundStyle(.white.opacity(0.48))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else if visibleProjects.isEmpty {
+                        ContentCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("No active personal projects are recorded.")
+                                    .font(.system(size: 18, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                                Text("When the private project registry contains active records, they will appear here and in MONDAY’s planning brief.")
+                                    .font(.system(size: 13)).foregroundStyle(.white.opacity(0.58))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 310), spacing: 14)], spacing: 14) {
+                            ForEach(visibleProjects) { project in
+                                Button { selectedProject = project } label: { PersonalProjectCard(project: project) }
+                                    .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    Text("PRIVATE SOURCE · LOCAL TO THIS MAC · NOT REPORTED TO JARVIS")
+                        .font(.system(size: 9, weight: .bold, design: .rounded)).tracking(1.1)
+                        .foregroundStyle(.white.opacity(0.40))
+                }
+                .padding(34).frame(maxWidth: 1320, alignment: .leading)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 20) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("PERSONAL PROJECTS").font(.system(size: 11, weight: .black, design: .rounded)).tracking(1.5).foregroundStyle(DashboardPalette.accent)
+                Text("The work that belongs to your life.").font(.system(size: 31, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                Text("A private operating view for the projects MONDAY helps you steward outside the Thermo portfolio.")
+                    .font(.system(size: 14)).foregroundStyle(.white.opacity(0.62))
+            }
+            Spacer(minLength: 16)
+            HStack(spacing: 9) {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.white.opacity(0.52))
+                    TextField("Find a personal project", text: $search).textFieldStyle(.plain).frame(width: 210).foregroundStyle(.white)
+                }
+                .padding(.horizontal, 11).padding(.vertical, 9)
+                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.12), lineWidth: 1))
+                Button { Task { await store.reload() } } label: { Label(store.loading ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.bordered).tint(.white.opacity(0.18)).foregroundStyle(.white).disabled(store.loading)
+            }
+        }
+        .padding(24).background(DashboardPalette.card, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.10), lineWidth: 1))
     }
 }
 
-private struct RouteMap: View {
+private struct PersonalProjectCard: View {
     let project: Project
+    var body: some View {
+        ContentCard {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    StatusBadge(label: project.status, color: project.healthColor)
+                    Spacer()
+                    Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.45))
+                }
+                Text(project.title).font(.system(size: 19, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                if let milestone = project.milestone {
+                    Text(milestone).font(.system(size: 12)).foregroundStyle(.white.opacity(0.62)).lineLimit(2)
+                } else {
+                    Text("No next milestone recorded.").font(.system(size: 12)).foregroundStyle(.white.opacity(0.46))
+                }
+                Text("UPDATED \(project.updatedAt?.formatted(date: .abbreviated, time: .omitted) ?? "UNKNOWN")")
+                    .font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.8).foregroundStyle(.white.opacity(0.42))
+            }
+            .frame(maxWidth: .infinity, minHeight: 150, alignment: .leading)
+        }
+    }
+}
+
+private struct ProjectRouteRow: View {
+    let project: Project
+    let workflow: WorkflowProject?
+    var body: some View {
+        ContentCard { HStack(spacing: 22) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(project.title).font(.system(size: 16, weight: .semibold, design: .rounded))
+                HStack(spacing: 6) { Text(project.healthLabel.capitalized); Text("·"); Text(project.gateSummary) }
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }.frame(width: 220, alignment: .leading)
+            ProjectFlowSummary(project: project, workflow: workflow).frame(maxWidth: .infinity)
+            Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(.tertiary)
+        }.frame(minHeight: 154) }
+    }
+}
+
+private struct ProjectFlowSummary: View {
+    let project: Project
+    let workflow: WorkflowProject?
     private var blueprint: WorkflowBlueprint { WorkflowBlueprints.forType(project.presentationType) }
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 0) {
-                ForEach(Array(blueprint.stations.enumerated()), id: \.element.id) { index, station in
-                    PortfolioStationNode(
-                        station: station,
-                        isCurrent: station.key == project.currentStationKey
-                    )
-                    if index < blueprint.stations.count - 1 {
-                        Rectangle().fill(Color.blue.opacity(0.45)).frame(width: 21, height: 2).padding(.bottom, 24)
+        VStack(alignment: .leading, spacing: 10) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(Array(blueprint.stations.enumerated()), id: \.element.id) { index, station in
+                        PortfolioStationNode(
+                            station: station,
+                            isCurrent: station.key == project.currentStationKey,
+                            isDecision: station.key == "RESET"
+                        )
+                        if index < blueprint.stations.count - 1 {
+                            Rectangle()
+                                .fill(station.key == "REVIEW" ? Color.orange.opacity(0.7) : Color.blue.opacity(0.45))
+                                .frame(width: 21, height: 2)
+                                .padding(.bottom, 24)
+                        }
                     }
                 }
+                .padding(.horizontal, 4)
             }
-            .padding(.horizontal, 4)
+            .scrollIndicators(.hidden)
+            HStack(alignment: .top, spacing: 14) {
+                FlowFact(label: "CURRENT PHASE", value: workflow?.currentPhaseLabel ?? project.currentPhaseLabel, tint: project.currentStationKey == nil ? .orange : .blue)
+                FlowFact(label: "NEXT EVIDENCE GATE", value: workflow?.nextEvidenceGate ?? project.nextEvidenceGate, tint: .blue)
+                FlowFact(label: "DECISION OWNER", value: workflow?.decision_owner ?? project.decisionOwner, tint: (workflow?.decision_owner ?? project.owner) == nil ? .orange : .green)
+            }
         }
-        .scrollIndicators(.hidden)
     }
 }
 
 private struct PortfolioStationNode: View {
     let station: WorkflowStation
     let isCurrent: Bool
+    let isDecision: Bool
 
     var body: some View {
         VStack(spacing: 3) {
@@ -185,7 +328,7 @@ private struct PortfolioStationNode: View {
                 .lineLimit(1)
             ZStack {
                 Circle().fill(isCurrent ? Color.blue.opacity(0.14) : .clear).frame(width: 27, height: 27)
-                Circle().fill(.white).frame(width: 13, height: 13).overlay(Circle().stroke(Color.blue, lineWidth: isCurrent ? 4 : 2))
+                Circle().fill(.white).frame(width: 13, height: 13).overlay(Circle().stroke(isDecision ? .orange : Color.blue, lineWidth: isCurrent ? 4 : 2))
             }
             HStack(spacing: 3) {
                 ForEach(station.stops, id: \.self) { _ in
@@ -195,6 +338,18 @@ private struct PortfolioStationNode: View {
             Text(station.name).font(.system(size: 8, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).frame(width: 66)
         }
         .frame(width: 70, height: 78, alignment: .top)
+    }
+}
+
+private struct FlowFact: View {
+    let label, value: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.system(size: 8, weight: .bold, design: .rounded)).tracking(0.8).foregroundStyle(tint)
+            Text(value).font(.system(size: 10, weight: .semibold)).foregroundStyle(.primary).lineLimit(2)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -438,16 +593,16 @@ private struct WorkflowStationCard: View {
 }
 
 private struct ProjectDetailView: View {
-    let project: Project; let close: () -> Void
+    let project: Project; let workflow: WorkflowProject?; let close: () -> Void
     var body: some View {
-        ZStack { Color(red: 0.961, green: 0.973, blue: 0.988).ignoresSafeArea(); ScrollView { VStack(spacing: 0) { detailMasthead; ProjectMapWorkspace(project: project); evidenceNote.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: 1360) } } }.preferredColorScheme(.light)
+        ZStack { DashboardPalette.canvas.ignoresSafeArea(); ScrollView { VStack(spacing: 0) { detailMasthead; ProjectMapWorkspace(project: project); if let workflow { WorkflowEvidencePlan(workflow: workflow).padding(.horizontal, 28).padding(.bottom, 20).frame(maxWidth: 1360) }; evidenceNote.padding(.horizontal, 28).padding(.bottom, 28).frame(maxWidth: 1360) } } }.preferredColorScheme(.dark)
     }
     private var detailMasthead: some View {
         HStack(alignment: .top, spacing: 18) {
             Button(action: close) { Label("All projects", systemImage: "chevron.left") }.buttonStyle(.bordered).tint(.white).foregroundStyle(.white)
             VStack(alignment: .leading, spacing: 6) { Text("SELECTED PROJECT").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.4).foregroundStyle(Color(red: 0.55, green: 0.77, blue: 1.0)); Text(project.title).font(.system(size: 28, weight: .semibold, design: .rounded)).foregroundStyle(.white); Text("The precise operating picture: what is known, what is needed, and what needs a decision.").font(.system(size: 12)).foregroundStyle(Color.white.opacity(0.72)) }
             Spacer(); StatusBadge(label: project.healthLabel, color: project.healthColor)
-        }.padding(.horizontal, 38).padding(.vertical, 25).background(LinearGradient(colors: [Color(red: 0.024, green: 0.090, blue: 0.165), Color(red: 0.035, green: 0.165, blue: 0.286)], startPoint: .topLeading, endPoint: .bottomTrailing))
+        }.padding(.horizontal, 38).padding(.vertical, 25).background(DashboardPalette.card)
     }
     private var detailPanels: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 15) {
@@ -459,11 +614,33 @@ private struct ProjectDetailView: View {
     private var evidenceNote: some View { HStack(alignment: .top, spacing: 10) { Image(systemName: "checkmark.shield").foregroundStyle(.blue); Text("This view is intentionally factual. A recorded milestone is not proof of completion; a gate is not approval; and missing evidence remains unknown until the registry says otherwise.").font(.system(size: 12)).foregroundStyle(.secondary) }.padding(15).background(Color.blue.opacity(0.055), in: RoundedRectangle(cornerRadius: 12)) }
 }
 
+private struct WorkflowEvidencePlan: View {
+    let workflow: WorkflowProject
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Text("EVIDENCE-LINKED SUBSTEPS").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1.3).foregroundStyle(DashboardPalette.accent)
+            Text("\(workflow.steps.count) substeps, refreshed from the governed project record").font(.system(size: 20, weight: .semibold, design: .rounded))
+            Text("Proposed substeps identify needed work. They are not completion claims and carry no evidence until an accepted record is available.").font(.system(size: 12)).foregroundStyle(.secondary)
+            ForEach(workflow.steps) { step in
+                ContentCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack { Text(step.station.replacingOccurrences(of: "_", with: " ")).font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.8).foregroundStyle(step.state == "recorded" ? DashboardPalette.green : DashboardPalette.amber); Spacer(); Text(step.evidence_status.uppercased()).font(.system(size: 9, weight: .bold, design: .rounded)).foregroundStyle(step.state == "recorded" ? DashboardPalette.green : DashboardPalette.amber) }
+                        Text(step.title).font(.system(size: 16, weight: .semibold, design: .rounded))
+                        Text(step.purpose).font(.system(size: 12)).foregroundStyle(.secondary)
+                        if step.evidence.isEmpty { Text("Evidence: no accepted artifact recorded yet.").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
+                        else { ForEach(step.evidence.prefix(3)) { evidence in Text("Evidence · \(evidence.kind): \(evidence.label) [\(evidence.standing)]").font(.system(size: 11)).foregroundStyle(.secondary) } }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+}
+
 private struct DetailPanel<Content: View>: View { let title, eyebrow, icon: String; let color: Color; @ViewBuilder let content: Content; var body: some View { ContentCard { VStack(alignment: .leading, spacing: 13) { Label(eyebrow, systemImage: icon).font(.system(size: 10, weight: .bold, design: .rounded)).tracking(0.9).foregroundStyle(color); Text(title).font(.system(size: 18, weight: .semibold, design: .rounded)); Divider(); content }.frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading) } } }
 private struct DetailLine: View { let label, value: String; var body: some View { VStack(alignment: .leading, spacing: 3) { Text(label.uppercased()).font(.system(size: 9, weight: .bold)).tracking(0.8).foregroundStyle(.tertiary); Text(value).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3) } } }
 private struct Legend: View { let label: String; let color: Color; var body: some View { HStack(spacing: 5) { Circle().fill(color).frame(width: 8, height: 8); Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary) } } }
 private struct StatusBadge: View { let label: String; let color: Color; var body: some View { Text(label.uppercased()).font(.system(size: 10, weight: .bold, design: .rounded)).tracking(0.8).foregroundStyle(color).padding(.horizontal, 10).padding(.vertical, 6).background(color.opacity(0.12), in: Capsule()).overlay(Capsule().stroke(color.opacity(0.35), lineWidth: 0.8)) } }
-private struct ContentCard<Content: View>: View { @ViewBuilder let content: Content; var body: some View { content.padding(18).background(.white, in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(Color(red: 0.85, green: 0.89, blue: 0.94), lineWidth: 0.8)).shadow(color: Color(red: 0.05, green: 0.15, blue: 0.25).opacity(0.06), radius: 12, y: 4) } }
+private struct ContentCard<Content: View>: View { @ViewBuilder let content: Content; var body: some View { content.padding(18).background(DashboardPalette.card, in: RoundedRectangle(cornerRadius: 15)).overlay(RoundedRectangle(cornerRadius: 15).stroke(.white.opacity(0.10), lineWidth: 0.8)).shadow(color: .black.opacity(0.22), radius: 12, y: 4) } }
 
 @MainActor private final class ProjectStore: ObservableObject {
     @Published private(set) var projects: [Project] = []; @Published private(set) var error: String?; @Published private(set) var loading = false
@@ -481,13 +658,112 @@ private struct ContentCard<Content: View>: View { @ViewBuilder let content: Cont
     }
 }
 
+@MainActor private final class PersonalProjectStore: ObservableObject {
+    @Published private(set) var projects: [Project] = []
+    @Published private(set) var error: String?
+    @Published private(set) var loading = false
+
+    func reload() async {
+        guard !loading else { return }
+        guard let path = CommandCenterPairing.shared.personalProjectsDirectoryURL?.path else {
+            projects = []
+            error = "Choose the Personal Project Knowledge vault in Settings when you are ready. It should contain a private 03 Projects folder."
+            return
+        }
+        loading = true
+        defer { loading = false }
+        do {
+            projects = try Registry.read(path: path)
+            error = nil
+        } catch {
+            projects = []
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+private struct WorkflowFeed: Decodable {
+    let schema_version: Int
+    let generated_at: String
+    let projects: [WorkflowProject]
+}
+
+private struct WorkflowProject: Decodable, Identifiable {
+    let project_id: String
+    let project_title: String
+    let source_path: String
+    let source_modified_at: String
+    let project_status: String
+    let current_station: String
+    let decision_owner: String?
+    let steps: [WorkflowStep]
+    var id: String { project_id }
+    var currentPhaseLabel: String { current_station.replacingOccurrences(of: "_", with: " ").capitalized }
+    var nextEvidenceGate: String { steps.first { $0.state != "recorded" }?.purpose ?? "No additional evidence gate recorded" }
+}
+
+private struct WorkflowStep: Decodable, Identifiable {
+    let id: String
+    let station: String
+    let title: String
+    let purpose: String
+    let state: String
+    let evidence_status: String
+    let evidence: [WorkflowEvidence]
+}
+
+private struct WorkflowEvidence: Decodable, Identifiable {
+    let label: String
+    let locator: String
+    let standing: String
+    let kind: String
+    var id: String { "\(kind):\(locator)" }
+}
+
+@MainActor private final class ProjectWorkflowStore: ObservableObject {
+    @Published private(set) var plans: [String: WorkflowProject] = [:]
+    @Published private(set) var error: String?
+
+    func plan(for projectID: String) -> WorkflowProject? { plans[projectID] }
+
+    func reload() async {
+        guard let url = CommandCenterPairing.shared.projectWorkflowFeedURL else { plans = [:]; return }
+        do {
+            let feed = try JSONDecoder().decode(WorkflowFeed.self, from: Data(contentsOf: url))
+            guard feed.schema_version == 1 else { throw WorkflowFeedError.unsupportedSchema }
+            plans = Dictionary(uniqueKeysWithValues: feed.projects.map { ($0.project_id, $0) })
+            error = nil
+        } catch {
+            plans = [:]
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+private enum WorkflowFeedError: LocalizedError {
+    case unsupportedSchema
+    var errorDescription: String? { "The project workflow feed has an unsupported schema." }
+}
+
 private struct Project: Identifiable {
-    let id, title, status, health: String; let domain, stage, gateState, milestone, action: String?; let priority: Int?; let gateDate, updatedAt: Date?; let plannedHours, actualHours: Double?
+    let id, title, status, health: String; let domain, stage, gateState, milestone, action, owner: String?; let priority: Int?; let gateDate, updatedAt: Date?; let plannedHours, actualHours: Double?
     var healthColor: Color { switch health { case "ready": .green; case "watch": .orange; case "at-risk", "intervention": .red; default: .gray } }
     var gateColor: Color { gateState?.contains("blocked") == true ? .red : gateState == nil ? .gray : .orange }
     var healthLabel: String { health.replacingOccurrences(of: "-", with: " ") }
     var gateLabel: String { gateDate?.formatted(.dateTime.month(.abbreviated).day().year()) ?? "Undated" }
     var gateSummary: String { "gate \(gateState?.replacingOccurrences(of: "_", with: " ") ?? "not assessed")" }
+    var currentPhaseLabel: String {
+        guard let currentStationKey else { return "Assessment required" }
+        return WorkflowBlueprints.forType(presentationType).stations.first { $0.key == currentStationKey }?.name ?? currentStationKey.replacingOccurrences(of: "_", with: " ")
+    }
+    var nextEvidenceGate: String {
+        guard let currentStationKey,
+              let station = WorkflowBlueprints.forType(presentationType).stations.first(where: { $0.key == currentStationKey }) else {
+            return "Record current stage, evidence, and accountable owner"
+        }
+        return action ?? milestone ?? station.stops.first ?? "Not recorded"
+    }
+    var decisionOwner: String { owner ?? "Not recorded" }
     var presentationType: String {
         let recorded = domain?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         switch recorded {
@@ -555,7 +831,7 @@ private enum Registry {
         let metadata = frontMatter(in: try String(contentsOf: url, encoding: .utf8))
         guard metadata["type"] == "project" else { return nil }
         let title = url.deletingPathExtension().lastPathComponent
-        return Project(id: metadata["id"] ?? title.lowercased().replacingOccurrences(of: " ", with: "-"), title: title, status: metadata["status"] ?? "unknown", health: metadata["health"] ?? "unknown", domain: metadata["organization"], stage: metadata["stage"], gateState: metadata["gate_state"], milestone: metadata["next_milestone"], action: metadata["next_action"], priority: Int(metadata["priority"] ?? ""), gateDate: date(metadata["gate_date"]), updatedAt: date(metadata["updated"] ?? metadata["last_evidence_review"]), plannedHours: Double(metadata["planned_hours_6m"] ?? ""), actualHours: Double(metadata["actual_hours_6m"] ?? ""))
+        return Project(id: metadata["id"] ?? title.lowercased().replacingOccurrences(of: " ", with: "-"), title: title, status: metadata["status"] ?? "unknown", health: metadata["health"] ?? "unknown", domain: metadata["organization"], stage: metadata["stage"], gateState: metadata["gate_state"], milestone: metadata["next_milestone"], action: metadata["next_action"], owner: metadata["owner"], priority: Int(metadata["priority"] ?? ""), gateDate: date(metadata["gate_date"]), updatedAt: date(metadata["updated"] ?? metadata["last_evidence_review"]), plannedHours: Double(metadata["planned_hours_6m"] ?? ""), actualHours: Double(metadata["actual_hours_6m"] ?? ""))
     }
     private static func frontMatter(in content: String) -> [String: String] {
         let lines = content.components(separatedBy: .newlines)
