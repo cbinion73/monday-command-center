@@ -2,6 +2,8 @@
 
 The Planning Pipeline is MONDAY's local operating engine. It reads only authorized, local records, creates append-only activity and operations receipts, and atomically publishes a bounded daily Command Brief for Command Center.
 
+Its calendar input is a separate, privacy-minimized feed at `~/.codex/monday-planner/calendar-feed.json`. A scheduled Codex run refreshes that feed from Outlook using only the local date, event title, start time, and end time. Schedule times are normalized to 24-hour `HH:mm` strings for Command Center. The published Command Center plan is never reused as tomorrow's calendar input. If the feed is missing, stale, or malformed, the plan remains usable but clearly marks Outlook Calendar unavailable.
+
 ## Record boundaries
 
 | Record | Location | Authority |

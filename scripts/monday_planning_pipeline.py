@@ -24,8 +24,12 @@ HOME = Path.home()
 MONDAY_KNOWLEDGE = HOME / "Knowledge Vault" / "Monday Knowledge"
 PROJECT_KNOWLEDGE = HOME / "Knowledge Vault" / "Project Knowledge"
 PERSONAL_PROJECTS = HOME / "Knowledge Vault" / "Personal Project Knowledge"
-CALENDAR_FEED = HOME / ".codex" / "monday-planner" / "daily-plan.json"
+# This is deliberately separate from OUTPUT.  Reading the prior Command Center
+# plan as the next day's calendar feed made a new day appear empty until a human
+# manually rebuilt it.
+CALENDAR_FEED = HOME / ".codex" / "monday-planner" / "calendar-feed.json"
 OUTPUT = HOME / ".codex" / "monday-planner" / "daily-plan.json"
+ARCHIVE_ROOT = HOME / ".codex" / "monday-planner" / "history"
 
 
 def now() -> datetime:
@@ -113,17 +117,36 @@ def jsonl_count(root: Path) -> int:
     return sum(1 for path in root.glob("*.jsonl") for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
 
-def load_calendar(path: Path, date: str) -> list[dict[str, str]]:
+def load_calendar(path: Path, date: str) -> tuple[list[dict[str, str]], str]:
     if not path.is_file():
-        return []
+        return [], "Calendar feed has not been refreshed for this day."
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         payload = payload.get("plan", payload)
         if payload.get("date") != date:
-            return []
-        return [item for item in payload.get("schedule", []) if all(isinstance(item.get(key), str) for key in ("time", "end", "title"))]
+            found_date = payload.get("date", "an unknown date")
+            return [], f"Calendar feed is dated {found_date}, not {date}."
+        schedule = []
+        for item in payload.get("schedule", []):
+            if not all(isinstance(item.get(key), str) for key in ("time", "end", "title")):
+                continue
+            start = normalized_clock(item["time"])
+            end = normalized_clock(item["end"])
+            if start and end:
+                schedule.append({"time": start, "end": end, "title": item["title"].strip()})
+        return schedule, "Titles and times only; calendar remains authoritative."
     except (OSError, json.JSONDecodeError, AttributeError):
-        return []
+        return [], "Calendar feed could not be read or validated."
+
+
+def normalized_clock(value: str) -> str | None:
+    """Normalize the privacy-minimized feed to Command Center's HH:mm contract."""
+    for pattern in ("%H:%M", "%I:%M %p"):
+        try:
+            return datetime.strptime(value.strip(), pattern).strftime("%H:%M")
+        except ValueError:
+            pass
+    return None
 
 
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -149,9 +172,13 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
     captain_root = HOME / "Knowledge Vault" / "Chris Knowledge" / "500 Personal Journal"
     research_root = MONDAY_KNOWLEDGE / "500 Research Journal"
     ledger_root = MONDAY_KNOWLEDGE / "100 Activity Ledger"
-    schedule = load_calendar(Path(args.calendar_feed), date)
+    calendar_path = Path(args.calendar_feed)
+    schedule, calendar_detail = load_calendar(calendar_path, date)
     sources = [
-        source("Outlook Calendar via Codex", "calendar", Path(args.calendar_feed), detail="Titles and times only; calendar remains authoritative."),
+        {
+            **source("Outlook Calendar via Codex", "calendar", calendar_path, detail=calendar_detail),
+            "status": "available" if calendar_detail.startswith("Titles and times") else "unavailable",
+        },
         source("Project Knowledge", "work-portfolio", work_root, detail=f"{len(work_projects)} active work project records read."),
         source("Decision Ledger", "commitments", PROJECT_KNOWLEDGE / "05 Decisions", detail=f"{len(decisions)} active, pending, or blocked work decision records read."),
         source("Activity Ledger", "ledger", ledger_root, detail=f"{jsonl_count(ledger_root)} local activity receipt(s) available."),
@@ -212,7 +239,7 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
         "status": "completed",
         "summary": "Built the local MONDAY Command Brief.",
         "sourceHealth": [{"name": item["name"], "status": item["status"]} for item in sources],
-        "outputs": [str(OUTPUT), f"400 MONDAY Operations/Receipts/{date}-planning-pipeline.json"],
+        "outputs": [str(OUTPUT), str(ARCHIVE_ROOT / f"{date}.json"), f"400 MONDAY Operations/Receipts/{date}-planning-pipeline.json"],
         "limitations": risks,
     }
     return plan, receipt
@@ -241,6 +268,7 @@ def main() -> None:
     plan["brief"]["activityLedger"]["recordCount"] = receipt["activityCount"]
     write_receipt(MONDAY_KNOWLEDGE, plan["date"], receipt)
     atomic_json(Path(args.output), plan)
+    atomic_json(ARCHIVE_ROOT / f"{plan['date']}.json", plan)
     print(f"Built MONDAY Command Brief for {plan['date']} at {args.output}")
 
 
