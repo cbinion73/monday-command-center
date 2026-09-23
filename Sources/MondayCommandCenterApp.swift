@@ -14,7 +14,7 @@ struct MondayCommandCenterApp: App {
 }
 
 private enum CommandCenterRoom: String, CaseIterable, Identifiable {
-    case today, projects, personalProjects, continuity, journal, researchJournal, planner
+    case today, projects, personalProjects, continuity, activity, operations, journal, researchJournal, planner
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -22,8 +22,10 @@ private enum CommandCenterRoom: String, CaseIterable, Identifiable {
         case .projects: "Projects"
         case .personalProjects: "Personal Projects"
         case .continuity: "Meeting Continuity"
+        case .activity: "Activity Ledger"
+        case .operations: "MONDAY Operations"
         case .journal: "Captain's Log"
-        case .researchJournal: "Research Journal"
+        case .researchJournal: "Research Chronicle"
         case .planner: "Planner"
         }
     }
@@ -33,6 +35,8 @@ private enum CommandCenterRoom: String, CaseIterable, Identifiable {
         case .projects: "point.3.connected.trianglepath.dotted"
         case .personalProjects: "person.crop.circle.badge.checkmark"
         case .continuity: "checklist.checked"
+        case .activity: "list.bullet.rectangle.portrait.fill"
+        case .operations: "waveform.path.ecg.rectangle.fill"
         case .journal: "book.closed.fill"
         case .researchJournal: "text.book.closed.fill"
         case .planner: "calendar"
@@ -76,8 +80,10 @@ private struct MondayCommandCenterShell: View {
         case .projects: CommandCenterView()
         case .personalProjects: PersonalProjectsRoom()
         case .continuity: MeetingContinuityRoom()
+        case .activity: GovernedRecordLibraryRoom(title: "Activity Ledger", subtitle: "Observable MONDAY and Codex activity receipts. This is not a complete account of your day.", rootURL: pairing.activityLedgerURL, emptyMessage: "Choose the Activity Ledger folder in Settings.")
+        case .operations: GovernedRecordLibraryRoom(title: "MONDAY Operations", subtitle: "Pipeline receipts, source health, open loops, and inspectable operational records.", rootURL: pairing.operationsURL, emptyMessage: "Choose the MONDAY Operations folder in Settings.")
         case .journal: VaultTomeRoom(title: "Captain's Log", subtitle: "Your personal journal, read from Chris Knowledge.", rootURL: pairing.captainsLogURL, emptyTitle: "No Captain's Log entries are available")
-        case .researchJournal: VaultTomeRoom(title: "Research Journal", subtitle: "MONDAY's research journal, read from Monday Knowledge.", rootURL: pairing.researchJournalURL, emptyTitle: "No MONDAY research-journal entries are available")
+        case .researchJournal: VaultTomeRoom(title: "Research Chronicle", subtitle: "Verified MONDAY system-building records, read from Monday Knowledge.", rootURL: pairing.researchJournalURL, emptyTitle: "No MONDAY Research Chronicle entries are available")
         case .planner: PlannerRoom()
         }
     }
@@ -119,7 +125,7 @@ private struct CommandCenterDashboard: View {
         .task {
             while !Task.isCancelled {
                 await refreshDeck()
-                do { try await Task.sleep(for: .seconds(1800)) }
+                do { try await Task.sleep(for: .seconds(60)) }
                 catch { return }
             }
         }
@@ -259,7 +265,10 @@ private struct CommandCenterDashboard: View {
         let sources = planner.plan?.sources ?? []
         guard !sources.isEmpty else { return "Planner source health is not available yet." }
         let available = sources.filter { $0.status == "available" }.count
-        return "\(available) of \(sources.count) planning sources available · details remain in Planner"
+        let unresolved = sources.count - available
+        return unresolved == 0
+            ? "All \(sources.count) planning sources report available · details remain in Planner"
+            : "\(available) of \(sources.count) planning sources available · \(unresolved) limited or unknown · details remain in Planner"
     }
 
     private var provenanceNote: some View {
@@ -678,7 +687,10 @@ private struct CommandDeckContextBar: View {
     }
 
     private var nextCalendarText: String {
-        guard let next = calendar.events.first else { return "No calendar item returned" }
+        if case .unavailable = calendar.state { return "Calendar coverage is unknown or unavailable" }
+        if case .notConnected = calendar.state { return "Calendar source is not connected" }
+        if case .loading = calendar.state { return "Refreshing Calendar source" }
+        guard let next = calendar.events.first else { return "Available Calendar source returned no events" }
         return "Scheduled: \(next.timeLabel) · \(next.title)"
     }
 }
@@ -1228,43 +1240,6 @@ private enum TomePalette {
     static let accent = Color(red: 0.38, green: 0.81, blue: 0.94)
 }
 
-private struct PlannerAPIResponse: Decodable { let status: String; let plan: DailyPlannerPlan? }
-private struct DailyPlannerPlan: Decodable {
-    let date: String
-    let generatedAt: Date
-    let timezone: String
-    let sources: [PlannerSource]
-    let primaryFocus: String
-    let schedule: [PlannerScheduleItem]
-    let priorities: PlannerPriorities
-    let notes: [String]
-    let compass: [PlannerCompassItem]
-    let brief: PlannerBrief?
-}
-private struct PlannerSource: Decodable { let kind: String; let name: String; let status: String; let fetchedAt: Date }
-private struct PlannerScheduleItem: Decodable { let time: String; let end: String; let title: String }
-private struct PlannerPriorities: Decodable { let a: [String]; let b: [String]; let c: [String] }
-private struct PlannerCompassItem: Decodable { let role: String; let goal: String }
-private struct PlannerBrief: Decodable {
-    let mission: String
-    let pullForwards: [String]
-    let risks: [String]
-    let workPortfolio: [PlannerPortfolioItem]
-    let personalPortfolio: [PlannerPortfolioItem]
-    let sourceHealth: [PlannerSource]
-}
-private struct PlannerPortfolioItem: Decodable { let title: String; let status: String; let updated: String }
-
-private enum PlannerFeedReader {
-    static func load(from url: URL) throws -> DailyPlannerPlan {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        if let response = try? decoder.decode(PlannerAPIResponse.self, from: data), let plan = response.plan { return plan }
-        return try decoder.decode(DailyPlannerPlan.self, from: data)
-    }
-}
-
 private enum PlannerArchive {
     static let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/monday-planner/history", isDirectory: true)
     static func url(for date: String) -> URL { root.appendingPathComponent("\(date).json") }
@@ -1294,12 +1269,43 @@ private final class DailyPlannerFeed: ObservableObject {
             let candidate = try PlannerFeedReader.load(from: url)
             let source = candidate.date == requestedDate ? url : PlannerArchive.url(for: requestedDate)
             let selected = source == url ? candidate : try PlannerFeedReader.load(from: source)
-            guard selected.date == requestedDate else { throw CocoaError(.fileReadCorruptFile) }
+            let today = Self.localDateKey(for: .now, timezone: selected.timezone)
+            switch selected.validation(expectedDate: requestedDate, enforceFreshness: requestedDate == today) {
+            case .current:
+                break
+            case .unsupportedSchema(let schema):
+                throw PlannerContractError.unsupportedSchema(schema)
+            case .wrongDate(let expected, let actual):
+                throw PlannerContractError.wrongDate(expected: expected, actual: actual)
+            case .expired(let date):
+                throw PlannerContractError.expired(date)
+            case .missingPlanIdentifier:
+                throw PlannerContractError.missingPlanIdentifier
+            }
             plan = selected
-            message = ""
+            if requestedDate == today,
+               let readback = selected.readback(
+                consumer: "MONDAY Command Center",
+                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+               ) {
+                try CommandCenterReadbackWriter.write(readback)
+                message = "Display verified for plan \(readback.planID)."
+            } else {
+                message = selected.schemaVersion == nil ? "Legacy plan displayed without readback verification." : ""
+            }
         } catch {
-            message = "No saved calendar plan is available for \(requestedDate). MONDAY will show only dates that have been archived by the planning pipeline."
+            message = (error as? LocalizedError)?.errorDescription
+                ?? "No saved plan is available for \(requestedDate). MONDAY will show only dates archived by the planning pipeline."
         }
+    }
+
+    private static func localDateKey(for date: Date, timezone: String) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: timezone) ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 }
 
@@ -1349,7 +1355,7 @@ private struct PlannerRoom: View {
                                 .help("Refresh the saved planner and meeting notes")
                             }
                             if let plan = planner.plan {
-                                Text("Prepared \(plan.generatedAt.formatted(date: .omitted, time: .shortened)) · \(plan.sourceSummary)")
+                                Text("Prepared \(plan.generatedAt.formatted(date: .omitted, time: .shortened)) · \(plan.sourceSummary)\(plan.planID.map { " · \($0)" } ?? "")")
                                     .font(.system(size: 10, weight: .medium, design: .rounded))
                                     .foregroundStyle(PlannerPaper.ink.opacity(0.58))
                             }
@@ -1374,7 +1380,7 @@ private struct PlannerRoom: View {
                         MacPlannerCompass(plan: planner.plan).frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                     MacPlannerCommandBrief(plan: planner.plan)
-                    Text(planner.plan == nil ? planner.message : "FRANKLIN-STYLE DAILY PLANNING PAGE · PREPARED BY MONDAY · CALENDAR REMAINS THE OWNER OF TIME").font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.9).foregroundStyle(PlannerPaper.ink.opacity(0.48)).padding(.vertical, 15)
+                    Text(planner.plan == nil ? planner.message : "FRANKLIN-STYLE DAILY PLANNING PAGE · PREPARED BY MONDAY · \(planner.message.isEmpty ? "DISPLAYED FROM A VERSIONED PROJECTION" : planner.message.uppercased())").font(.system(size: 9, weight: .bold, design: .rounded)).tracking(0.9).foregroundStyle(PlannerPaper.ink.opacity(0.48)).padding(.vertical, 15)
                 }
                 .background(PlannerPaper.page, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: .black.opacity(0.48), radius: 26, y: 13)
@@ -1387,7 +1393,7 @@ private struct PlannerRoom: View {
         .task(id: dateKey) {
             while !Task.isCancelled {
                 await refreshPage()
-                do { try await Task.sleep(for: .seconds(1800)) }
+                do { try await Task.sleep(for: .seconds(60)) }
                 catch { return }
             }
         }
@@ -1409,13 +1415,14 @@ private struct MacPlannerSchedule: View {
     let openNote: (MeetingNote) -> Void
     @State private var unmappedTitle: String?
     private var schedule: [PlannerScheduleItem] { (plan?.schedule ?? []).sorted { $0.time < $1.time } }
+    private var calendarSource: PlannerSource? { plan?.sources.first { $0.kind == "calendar" } }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MacPlannerSectionTitle(title: "SCHEDULE", detail: "LOCAL TIME / ONE SOURCE")
+            MacPlannerSectionTitle(title: "SCHEDULE", detail: "CALENDAR: \(calendarSource?.status.uppercased() ?? "UNKNOWN")")
             Text(plan == nil ? "No normalized MONDAY plan is available yet." : "Fixed commitments and intentional focus blocks, rendered in \(plan?.timezone ?? "local") time.")
                 .font(.system(size: 11, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.65)).padding(.horizontal, 18).padding(.vertical, 11)
             if schedule.isEmpty {
-                Text("No scheduled events were returned by the normalized planner payload.").font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.62)).padding(.horizontal, 18).padding(.bottom, 18)
+                Text(emptyScheduleMessage).font(.system(size: 12, design: .serif)).foregroundStyle(PlannerPaper.ink.opacity(0.62)).padding(.horizontal, 18).padding(.bottom, 18)
             } else {
                 ForEach(Array(schedule.enumerated()), id: \.offset) { _, item in
                     let eventColor = PlannerEventColor.forTitle(item.title)
@@ -1437,6 +1444,24 @@ private struct MacPlannerSchedule: View {
             }
         }
         .alert("No mapped meeting note", isPresented: Binding(get: { unmappedTitle != nil }, set: { if !$0 { unmappedTitle = nil } })) { Button("OK", role: .cancel) {} } message: { Text("\(unmappedTitle ?? "This meeting") does not have a governed note in Meeting Notes yet.") }
+    }
+
+    private var emptyScheduleMessage: String {
+        guard let source = calendarSource else {
+            return "Calendar coverage is unknown. This is not evidence that the day is clear."
+        }
+        switch source.status {
+        case "available":
+            return "The available Calendar source returned no scheduled events for this plan."
+        case "partial":
+            return "Calendar coverage is partial. Some commitments may be missing. \(source.detail ?? "")"
+        case "stale":
+            return "Calendar coverage is stale. Refresh the planning pipeline before relying on this schedule."
+        case "blocked", "unavailable":
+            return "Calendar is \(source.status). This is not evidence that the day is clear. \(source.detail ?? source.error ?? "")"
+        default:
+            return "Calendar coverage is unknown. This is not evidence that the day is clear. \(source.detail ?? "")"
+        }
     }
 
     private func displayTime(_ time: String) -> String { let pieces = time.split(separator: ":"); guard let hour = Int(pieces[0]), let minute = pieces.last else { return time }; let shown = hour > 12 ? hour - 12 : hour; return "\(shown):\(minute) \(hour >= 12 ? "PM" : "AM")" }
@@ -1591,15 +1616,24 @@ private struct SourceHealthRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Text("SOURCE HEALTH").font(.system(size: 9, weight: .black, design: .rounded)).tracking(0.8).foregroundStyle(PlannerPaper.ink.opacity(0.58))
-            ForEach(Array(sources.prefix(6).enumerated()), id: \.offset) { _, source in
+            ForEach(Array(sources.prefix(8).enumerated()), id: \.offset) { _, source in
                 Text("\(source.name): \(source.status)")
                     .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(source.status == "available" ? PlannerEventColor.forTitle("workout") : PlannerEventColor.urgent)
+                    .foregroundStyle(color(for: source.status))
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PlannerPaper.ink.opacity(0.045))
+    }
+
+    private func color(for status: String) -> Color {
+        switch status {
+        case "available": DashboardPalette.green
+        case "partial", "stale": DashboardPalette.amber
+        case "blocked", "unavailable": DashboardPalette.red
+        default: PlannerPaper.ink.opacity(0.58)
+        }
     }
 }
 
@@ -1916,8 +1950,14 @@ private final class CalendarStore: ObservableObject {
         state = .loading
         do {
             let plan = try PlannerFeedReader.load(from: url)
-            guard plan.isCurrentForLocalDay else {
-                state = .unavailable("The Planner shared plan is dated \(plan.date), not today. Refresh it in Codex before using it in Command Center.")
+            let expected = Self.localDateKey(timezone: plan.timezone)
+            guard plan.validation(expectedDate: expected, enforceFreshness: true) == .current else {
+                state = .unavailable("The Planner projection is not current and verified. Refresh it in Codex before using it in Command Center.")
+                return
+            }
+            guard let calendarSource = plan.sources.first(where: { $0.kind == "calendar" }), calendarSource.status == "available" else {
+                let source = plan.sources.first(where: { $0.kind == "calendar" })
+                state = .unavailable(source?.detail ?? "Calendar coverage is unknown. This is not evidence that the day is clear.")
                 return
             }
             events = plan.schedule
@@ -1927,5 +1967,14 @@ private final class CalendarStore: ObservableObject {
         } catch {
             state = .unavailable("The Planner shared plan could not be read: \(error.localizedDescription)")
         }
+    }
+
+    private static func localDateKey(timezone: String) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: timezone) ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: .now)
     }
 }

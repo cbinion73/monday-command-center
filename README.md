@@ -10,8 +10,9 @@ MONDAY plugin.
 ## Current status
 
 This repository is public so the Command Center interface can be shared and
-reviewed. Command Center v1 is a read-oriented companion for a person who has
-already installed the MONDAY Thermo plugin. It ships no credentials, personal
+reviewed. Command Center v0.2 is a read-oriented companion for a person who has
+already installed the consolidated `monday` plugin. Planning, Personal, and
+Thermo are capability families inside that plugin. It ships no credentials, personal
 data, tokens, or user-specific file paths.
 
 On first launch, Command Center looks only in Codex's local plugin cache and
@@ -19,11 +20,12 @@ MONDAY's documented vault locations. When it finds a valid installed plugin and
 recipient-owned Project Knowledge vault, it pairs automatically. If either is
 missing or nonstandard, Settings opens with its best verified suggestions:
 
-- their installed `monday-thermo` plugin folder;
+- their installed `monday` plugin folder;
 - their recipient-owned Project Knowledge vault, containing `03 Projects`;
-- optionally, their private Personal Project Knowledge vault, containing its own `03 Projects` folder;
+- optionally, their private Personal Project Knowledge vault;
 - their Captain's Log at `Chris Knowledge/500 Personal Journal`;
-- MONDAY's Research Journal at `Monday Knowledge/500 Research Journal`;
+- MONDAY's Research Chronicle at `Monday Knowledge/500 Research Journal`;
+- MONDAY's Activity Ledger and Operations folders;
 - optionally, a local JSON file exported by the Codex Planner skill.
 
 The app verifies the plugin manifest and vault layout before saving local
@@ -45,7 +47,7 @@ xcodebuild -project MondayCommandCenter.xcodeproj \
 
 ## Recipient setup
 
-1. Install the MONDAY Thermo plugin and create a recipient-owned Project
+1. Install the consolidated MONDAY plugin and create a recipient-owned Project
    Knowledge vault. The plugin's `docs/recipient-vault-setup.md` documents the
    non-destructive vault bootstrap.
 2. Install Command Center from a signed release when one is published, then
@@ -66,6 +68,15 @@ xcodebuild -project MondayCommandCenter.xcodeproj \
 The settings are stored locally in the app's preferences and can be removed
 with **Settings → Forget this Mac**. Removing them changes no MONDAY data.
 
+### Keep the daily plan current
+
+The consolidated MONDAY plugin owns the planning pipeline and its scheduled
+refresh. Command Center reads the versioned projection at
+`~/.codex/monday-planner/daily-plan.json`, refreshes it every minute, rejects
+wrong-date, expired, unsupported, or unverifiable schema-v3 plans, and writes
+`readback.json` only after the exact plan is displayed. Publication alone is
+not proof that the app rendered it.
+
 ## Release boundary
 
 A shareable build must be archived with an Apple Developer ID Application
@@ -82,13 +93,13 @@ the DMG path.
 
 ## Boundaries
 
-- MONDAY remains a ChatGPT plugin.
+- MONDAY remains the consolidated Codex plugin and planning engine.
 - Command Center is a read-oriented companion interface.
 - Codex owns calendar authorization. Command Center never stores or receives
   calendar credentials, and only reads the selected Planner JSON export.
 - The Planner connection is a local, user-selected file contract. It is not a
   hidden localhost service or a direct bridge into a Codex conversation.
-- The Planning Pipeline creates local activity and MONDAY Operations receipts;
+- The plugin Planning Pipeline creates local activity and MONDAY Operations receipts;
   it never writes a Captain's Log, calendar, external task, or message.
 - Vault and Codex access are opt-in and user-owned.
 - Tokens, private records, local build products, and generated projects do not

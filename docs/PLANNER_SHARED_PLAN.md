@@ -10,14 +10,17 @@ The app accepts either this object directly or this object wrapped as
 
 ```json
 {
+  "schemaVersion": 3,
+  "planID": "plan-2026-09-23-example",
   "date": "2026-09-11",
   "generatedAt": "2026-09-11T08:00:00Z",
+  "validUntil": "2026-09-12T00:00:00-04:00",
   "timezone": "America/New_York",
   "sources": [
     {
       "kind": "calendar",
       "name": "Connected calendar",
-      "status": "current",
+      "status": "available",
       "fetchedAt": "2026-09-11T08:00:00Z"
     }
   ],
@@ -45,14 +48,28 @@ other calendar details that are not needed for the day view.
 The Command Center is read-only. It does not alter the calendar, create tasks,
 or write to the selected plan file.
 
+## Schema version 3 and display verification
+
+Schema version 3 is the current MONDAY contract. It requires `planID`, adds an
+explicit freshness boundary in `validUntil`, carries bounded coverage and
+source-health details, and identifies the publication producer. Command Center
+rejects unsupported, wrong-date, expired, or identifier-free v3 projections.
+
+After displaying a current schema-v3 plan, Command Center atomically writes
+`~/.codex/monday-planner/readback.json`. The receipt binds the consumer, app
+version, plan schema, and exact `planID`. A published plan without a matching
+readback remains published, not display-verified.
+
 ## MONDAY Command Brief extension
 
-Schema version 2 may include a `brief` object beside the bounded day-plan
-fields. It is generated locally by `scripts/monday_planning_pipeline.py` and
+Schema versions 2 and 3 may include a `brief` object beside the bounded day-plan
+fields. It is generated locally by the consolidated MONDAY plugin and
 contains only recommendation text, project titles/status, pull-forwards, and
 source-health labels. The app uses it to render the Command Brief; older apps
 safely ignore the extension.
 
 The extension must not contain raw calendar bodies, attendees, credentials,
 private communications, hidden reasoning, or a substitute for Chris's Captain's
-Log. Missing sources must remain visible as `unavailable`.
+Log. Missing sources must remain visible as `unknown`, `partial`, `stale`,
+`blocked`, or `unavailable`. An empty schedule is not evidence that the day is
+clear when Calendar coverage is not `available`.

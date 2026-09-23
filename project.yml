@@ -3,6 +3,15 @@ options:
   bundleIdPrefix: com.chris
   deploymentTarget:
     macOS: "15.0"
+schemes:
+  MondayCommandCenter:
+    build:
+      targets:
+        MondayCommandCenter: all
+        MondayCommandCenterTests: [test]
+    test:
+      targets:
+        - MondayCommandCenterTests
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -17,11 +26,23 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chris.commandcenter
         PRODUCT_NAME: Command Center
-        MARKETING_VERSION: "0.1.9"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "8"
         CODE_SIGN_IDENTITY: "MONDAY Command Center Local"
         CODE_SIGN_STYLE: Manual
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_HARDENED_RUNTIME: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Command Center
+  MondayCommandCenterTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: MondayCommandCenter
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Command Center.app/Contents/MacOS/Command Center"
+        BUNDLE_LOADER: "$(TEST_HOST)"

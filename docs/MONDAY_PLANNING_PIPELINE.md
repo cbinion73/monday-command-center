@@ -1,8 +1,8 @@
 # MONDAY Planning Pipeline
 
-The Planning Pipeline is MONDAY's local operating engine. It reads only authorized, local records, creates append-only activity and operations receipts, and atomically publishes a bounded daily Command Brief for Command Center.
+The Planning Pipeline is owned by the consolidated `monday` plugin. It reads only authorized, local records, creates append-only activity and operations receipts, and atomically publishes a bounded daily Command Brief for Command Center.
 
-Its calendar input is a separate, privacy-minimized feed at `~/.codex/monday-planner/calendar-feed.json`. A scheduled Codex run refreshes that feed from Outlook using only the local date, event title, start time, and end time. Schedule times are normalized to 24-hour `HH:mm` strings for Command Center. The published Command Center plan is never reused as tomorrow's calendar input. If the feed is missing, stale, or malformed, the plan remains usable but clearly marks Outlook Calendar unavailable.
+Its calendar input is a separate, privacy-minimized source artifact. A scheduled Codex run may refresh that source using only the local date, event title, start time, and end time. Schedule times are normalized to 24-hour `HH:mm` strings for Command Center. The published Command Center plan is never reused as tomorrow's calendar input. If the source manifest is missing, stale, blocked, partial, or malformed, the plan remains usable but Calendar coverage stays explicitly limited.
 
 ## Record boundaries
 
@@ -22,11 +22,5 @@ Its calendar input is a separate, privacy-minimized feed at `~/.codex/monday-pla
 - Every recommendation identifies source availability. Missing data becomes a visible limitation, not a fabricated conclusion.
 - The app reads the resulting plan. It does not hold source credentials or execute actions.
 
-## Run locally
-
-```sh
-python3 scripts/monday_planning_pipeline.py \
-  --activity-summary "Built the MONDAY Planning Pipeline foundation and Command Center brief contract."
-```
-
-Use `--dry-run` to inspect the generated plan without creating a receipt or updating Command Center.
+Command Center does not run a second planning engine. It consumes the plugin's
+schema-v3 projection and verifies display through a plan-bound readback receipt.

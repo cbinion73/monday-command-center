@@ -1,0 +1,25 @@
+name: Command Center validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build and test Command Center
+        run: >-
+          xcodebuild
+          -project MondayCommandCenter.xcodeproj
+          -scheme MondayCommandCenter
+          -configuration Debug
+          -derivedDataPath "$RUNNER_TEMP/monday-command-center"
+          CODE_SIGNING_ALLOWED=NO
+          test
