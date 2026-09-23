@@ -284,6 +284,7 @@ private struct CommandCenterDashboard: View {
     }
 }
 
+#if LEGACY_COMMAND_RADAR
 private struct CommandRadar: View {
     private struct Reading {
         let label: String
@@ -564,6 +565,8 @@ private struct CommandRadarRoom: View {
     }
 
 }
+
+#endif
 
 private struct CommandDeckWeatherBackdrop: View {
     let snapshot: WeatherSnapshot?
