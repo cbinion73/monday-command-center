@@ -27,7 +27,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.chris.commandcenter
         PRODUCT_NAME: Command Center
         MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "8"
+        CURRENT_PROJECT_VERSION: "9"
         CODE_SIGN_IDENTITY: "MONDAY Command Center Local"
         CODE_SIGN_STYLE: Manual
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -43,6 +43,8 @@ targets:
       - target: MondayCommandCenter
     settings:
       base:
+        CODE_SIGN_IDENTITY: "MONDAY Command Center Local"
+        CODE_SIGN_STYLE: Manual
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Command Center.app/Contents/MacOS/Command Center"
         BUNDLE_LOADER: "$(TEST_HOST)"

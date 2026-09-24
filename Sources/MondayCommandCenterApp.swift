@@ -1317,6 +1317,7 @@ private struct PlannerRoom: View {
     @StateObject private var meetingNotes = MeetingNoteIndex()
     @AppStorage("dailyFocus") private var dailyFocus = ""
     @State private var selectedDate = Calendar.current.startOfDay(for: .now)
+    @State private var followsToday = true
     @State private var showingCalendar = false
     @State private var selectedNote: MeetingNote?
     @State private var isRefreshing = false
@@ -1391,10 +1392,23 @@ private struct PlannerRoom: View {
                 .frame(maxWidth: 1160)
             }
         }
-        .sheet(isPresented: $showingCalendar) { SavedCalendarSheet(selectedDate: $selectedDate, savedDates: PlannerArchive.savedDates(currentPlanURL: CommandCenterPairing.shared.plannerFeedURL)) }
+        .sheet(isPresented: $showingCalendar) {
+            SavedCalendarSheet(
+                selectedDate: selectedDate,
+                savedDates: PlannerArchive.savedDates(currentPlanURL: CommandCenterPairing.shared.plannerFeedURL)
+            ) { openedDate in
+                selectedDate = openedDate
+                followsToday = Self.dateFormatter.string(from: openedDate) == Self.dateFormatter.string(from: .now)
+            }
+        }
         .sheet(item: $selectedNote) { MeetingNoteSheet(note: $0) }
         .task(id: dateKey) {
             while !Task.isCancelled {
+                let rolloverDate = PlannerDayRollover.selection(current: selectedDate, now: .now, followsToday: followsToday)
+                if rolloverDate != selectedDate {
+                    selectedDate = rolloverDate
+                    continue
+                }
                 await refreshPage()
                 do { try await Task.sleep(for: .seconds(60)) }
                 catch { return }
@@ -1471,8 +1485,9 @@ private struct MacPlannerSchedule: View {
 }
 
 private struct SavedCalendarSheet: View {
-    @Binding var selectedDate: Date
+    let selectedDate: Date
     let savedDates: [String]
+    let openDate: (Date) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var candidate = Calendar.current.startOfDay(for: .now)
     private static let formatter: DateFormatter = { let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = TimeZone(identifier: "America/New_York"); formatter.dateFormat = "yyyy-MM-dd"; return formatter }()
@@ -1487,9 +1502,10 @@ private struct SavedCalendarSheet: View {
             Divider()
             Text("RECENTLY SAVED").font(.system(size: 10, weight: .bold, design: .rounded)).tracking(1)
             ScrollView { VStack(alignment: .leading, spacing: 6) { ForEach(savedDates.prefix(20), id: \.self) { date in Button(date) { candidate = Self.formatter.date(from: date) ?? candidate }.buttonStyle(.plain) } } }.frame(maxHeight: 130, alignment: .topLeading)
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Open Date") { selectedDate = candidate; dismiss() }.buttonStyle(.borderedProminent).disabled(!savedDates.contains(candidateKey)) }
+            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Open Date") { openDate(candidate); dismiss() }.buttonStyle(.borderedProminent).disabled(!savedDates.contains(candidateKey)) }
         }
         .padding(26).frame(width: 430)
+        .onAppear { candidate = selectedDate }
     }
 }
 

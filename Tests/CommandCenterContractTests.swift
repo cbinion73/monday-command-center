@@ -35,6 +35,19 @@ final class CommandCenterContractTests: XCTestCase {
         XCTAssertTrue(plan.schedule.isEmpty)
     }
 
+    func testPlannerFollowingTodayRollsAcrossMidnight() {
+        let selected = instant("2026-09-23T08:00:00-04:00")
+        let afterMidnight = instant("2026-09-24T00:01:00-04:00")
+        let result = PlannerDayRollover.selection(current: selected, now: afterMidnight, followsToday: true)
+        XCTAssertEqual(result, instant("2026-09-24T00:00:00-04:00"))
+    }
+
+    func testPlannerBrowsingArchiveDoesNotRollAcrossMidnight() {
+        let selected = instant("2026-09-22T00:00:00-04:00")
+        let afterMidnight = instant("2026-09-24T00:01:00-04:00")
+        XCTAssertEqual(PlannerDayRollover.selection(current: selected, now: afterMidnight, followsToday: false), selected)
+    }
+
     private func decode(planID: String?, validUntil: String) throws -> DailyPlannerPlan {
         let identifier = planID.map { "\"\($0)\"" } ?? "null"
         let json = """

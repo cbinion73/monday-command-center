@@ -1,5 +1,19 @@
 import Foundation
 
+enum PlannerDayRollover {
+    static func selection(
+        current: Date,
+        now: Date,
+        followsToday: Bool,
+        timezoneID: String = "America/New_York"
+    ) -> Date {
+        guard followsToday else { return current }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: timezoneID) ?? .current
+        return calendar.startOfDay(for: now)
+    }
+}
+
 /// Versioned read-only projection produced by the consolidated MONDAY plugin.
 /// Command Center is a cockpit. Vaults and governed ledgers remain authoritative.
 struct DailyPlannerPlan: Decodable {
