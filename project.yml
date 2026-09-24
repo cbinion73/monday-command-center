@@ -26,8 +26,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chris.commandcenter
         PRODUCT_NAME: Command Center
-        MARKETING_VERSION: "0.3.0"
-        CURRENT_PROJECT_VERSION: "13"
+        MARKETING_VERSION: "0.4.0"
+        CURRENT_PROJECT_VERSION: "14"
         CODE_SIGN_IDENTITY: "MONDAY Command Center Local"
         CODE_SIGN_STYLE: Manual
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

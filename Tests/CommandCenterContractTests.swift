@@ -5,7 +5,147 @@ final class CommandCenterContractTests: XCTestCase {
     func testCommandCenterRoomLaunchRouting() {
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center"]), .today)
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "digitalTwin"]), .digitalTwin)
+        XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "runtimeOperations"]), .runtimeOperations)
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "unknown"]), .today)
+    }
+
+    func testRuntimeProjectionSupportsPopulatedPartialRetryingDeadLetteredAndIndeterminateState() throws {
+        let projection = try decodeRuntime()
+        XCTAssertEqual(projection.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertTrue(projection.workflows.contains(where: { $0.state == "retrying" }))
+        XCTAssertTrue(projection.workflows.contains(where: { $0.state == "dead-lettered" }))
+        XCTAssertEqual(projection.deadLetters.first?.replayEligibility, "requires-review")
+        XCTAssertEqual(projection.sources.first?.status, "partial")
+        XCTAssertEqual(projection.connections.first?.coverageState, "unknown")
+    }
+
+    func testRuntimeProjectionSupportsEmptyAndRecoveredStates() throws {
+        let empty = try decodeRuntime { object in
+            for key in ["workflows", "retries", "deadLetters", "externalActions", "commitments", "decisions", "sources", "connections", "migrations", "alerts", "recoveryInstructions"] {
+                object[key] = []
+            }
+            object["coverage"] = runtimeCoverage()
+        }
+        XCTAssertEqual(empty.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .current)
+
+        let recovered = try decodeRuntime { object in
+            var workflow = (object["workflows"] as! [[String: Any]])[0]
+            workflow["state"] = "succeeded"
+            workflow["nextAttemptAt"] = NSNull()
+            workflow["errorCode"] = NSNull()
+            object["workflows"] = [workflow]
+            object["retries"] = []
+            object["deadLetters"] = []
+            var alert = (object["alerts"] as! [[String: Any]])[0]
+            alert["state"] = "resolved"
+            alert["resolvedAt"] = "2026-09-23T11:45:00-04:00"
+            object["alerts"] = [alert]
+            object["coverage"] = runtimeCoverage(workflows: 1, actions: 1, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1)
+        }
+        XCTAssertEqual(recovered.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertEqual(recovered.workflows.first?.state, "succeeded")
+        XCTAssertEqual(recovered.alerts.first?.state, "resolved")
+    }
+
+    func testRuntimeReadbackIsViewSpecificForEveryOperationalSurface() throws {
+        let projection = try decodeRuntime()
+        XCTAssertEqual(RuntimeOperationsReadback.allowedViewIDs.count, 8)
+        for viewID in RuntimeOperationsReadback.allowedViewIDs {
+            let receipt = try XCTUnwrap(projection.readback(
+                viewID: viewID,
+                consumer: "MONDAY Command Center",
+                appVersion: "0.4.0",
+                displayedAt: instant("2026-09-23T12:00:00-04:00")
+            ))
+            XCTAssertEqual(receipt.projectionID, projection.projectionID)
+            XCTAssertEqual(receipt.viewIDs, [viewID])
+            XCTAssertEqual(receipt.state, "displayed")
+        }
+        XCTAssertNil(projection.readback(viewID: "operations-all", consumer: "MONDAY Command Center", appVersion: "0.4.0"))
+    }
+
+    func testRuntimeProjectionRejectsFutureSchemaAndIncompatibleApp() throws {
+        let future = try decodeRuntime { $0["schemaVersion"] = 2 }
+        XCTAssertEqual(future.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .unsupportedSchema(2))
+
+        let incompatible = try decodeRuntime { object in
+            var compatibility = object["compatibility"] as! [String: Any]
+            compatibility["minimumAppVersion"] = "0.5.0"
+            compatibility["status"] = "update-required"
+            object["compatibility"] = compatibility
+        }
+        XCTAssertEqual(incompatible.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .incompatibleApp("0.5.0"))
+        XCTAssertNil(incompatible.readback(viewID: "operations-overview", consumer: "MONDAY Command Center", appVersion: "0.4.0"))
+    }
+
+    func testRuntimeProjectionRejectsInvalidDigestAndDuplicateIdentifiers() throws {
+        let digest = try decodeRuntime { $0["contentDigest"] = String(repeating: "d", count: 64) }
+        XCTAssertEqual(digest.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .invalidContentDigest)
+
+        let duplicate = try decodeRuntime { object in
+            let workflows = object["workflows"] as! [[String: Any]]
+            object["workflows"] = workflows + [workflows[0]]
+            object["coverage"] = runtimeCoverage(workflows: 3, retries: 1, deadLetters: 1, actions: 1, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1, unresolved: 5)
+        }
+        XCTAssertEqual(duplicate.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .duplicateIdentifier("workflow"))
+    }
+
+    func testRuntimeProjectionRejectsImpossibleActionAndDenominatorMismatch() throws {
+        let impossible = try decodeRuntime { object in
+            var action = (object["externalActions"] as! [[String: Any]])[0]
+            action["state"] = "verified"
+            action["readbackStatus"] = "matched"
+            action["confirmedAt"] = "2026-09-23T11:00:00-04:00"
+            action["attemptedAt"] = "2026-09-23T11:05:00-04:00"
+            action["verifiedAt"] = NSNull()
+            object["externalActions"] = [action]
+        }
+        XCTAssertEqual(impossible.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .invalidExternalAction("action-calendar-001"))
+
+        let mismatch = try decodeRuntime { object in
+            object["coverage"] = runtimeCoverage(workflows: 99)
+        }
+        XCTAssertEqual(mismatch.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .denominatorMismatch)
+    }
+
+    func testRuntimeProjectionRejectsProhibitedMaterialAndUnknownFields() throws {
+        let prohibited = try decodeRuntime { object in
+            var alert = (object["alerts"] as! [[String: Any]])[0]
+            alert["safeSummary"] = "Inspect /Users/chris/private.txt"
+            object["alerts"] = [alert]
+        }
+        XCTAssertEqual(prohibited.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .prohibitedMaterial("alert-runtime-001"))
+
+        var unknown = runtimeObject()
+        unknown["rawEmailBody"] = "not permitted"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try JSONSerialization.data(withJSONObject: unknown).write(to: url)
+        XCTAssertThrowsError(try RuntimeOperationsReader.load(from: url)) { error in
+            guard case RuntimeOperationsContractError.malformedShape("root") = error else { return XCTFail("Expected root shape rejection, got \(error)") }
+        }
+    }
+
+    func testRuntimeReaderVerifiesCanonicalContentDigest() throws {
+        var valid = runtimeObject()
+        valid.removeValue(forKey: "contentDigest")
+        valid.removeValue(forKey: "projectionID")
+        let digest = try RuntimeOperationsReader.contentDigest(for: valid)
+        valid["contentDigest"] = digest
+        valid["projectionID"] = "runtime-2026-09-23-\(digest.prefix(12))"
+        let validURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        let tamperedURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: validURL); try? FileManager.default.removeItem(at: tamperedURL) }
+        try JSONSerialization.data(withJSONObject: valid, options: [.sortedKeys]).write(to: validURL)
+        XCTAssertNoThrow(try RuntimeOperationsReader.load(from: validURL))
+
+        var alerts = valid["alerts"] as! [[String: Any]]
+        alerts[0]["safeSummary"] = "The normalized evidence changed after publication."
+        valid["alerts"] = alerts
+        try JSONSerialization.data(withJSONObject: valid, options: [.sortedKeys]).write(to: tamperedURL)
+        XCTAssertThrowsError(try RuntimeOperationsReader.load(from: tamperedURL)) { error in
+            guard case RuntimeOperationsContractError.invalidContentDigest = error else { return XCTFail("Expected integrity rejection, got \(error)") }
+        }
     }
 
     func testSchemaThreePlanRequiresIdentifier() throws {
@@ -176,6 +316,107 @@ final class CommandCenterContractTests: XCTestCase {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(TwinInspectionProjection.self, from: Data(json.utf8))
+    }
+
+    private func decodeRuntime(_ update: (inout [String: Any]) -> Void = { _ in }) throws -> RuntimeOperationsProjection {
+        var object = runtimeObject()
+        update(&object)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(RuntimeOperationsProjection.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private func runtimeObject() -> [String: Any] {
+        let digest = String(repeating: "c", count: 64)
+        return [
+            "schemaVersion": 1,
+            "projectionID": "runtime-2026-09-23-\(String(digest.prefix(12)))",
+            "contentDigest": digest,
+            "generatedAt": "2026-09-23T10:00:00-04:00",
+            "validUntil": "2026-09-24T10:00:00-04:00",
+            "producer": "monday-runtime",
+            "audience": "Chris-private-local",
+            "runtimeVersion": "1.0.0",
+            "workflows": [
+                [
+                    "workflowID": "workflow-planning-001", "kind": "daily-planning", "state": "retrying",
+                    "attemptCount": 2, "maxAttempts": 4, "idempotencyKey": "idem-planning-001",
+                    "updatedAt": "2026-09-23T11:30:00-04:00", "startedAt": "2026-09-23T11:00:00-04:00",
+                    "nextAttemptAt": "2026-09-23T12:15:00-04:00", "checkpoint": "source-validation", "errorCode": "SOURCE_PARTIAL"
+                ],
+                [
+                    "workflowID": "workflow-meeting-001", "kind": "meeting-continuity", "state": "dead-lettered",
+                    "attemptCount": 4, "maxAttempts": 4, "idempotencyKey": "idem-meeting-001",
+                    "updatedAt": "2026-09-23T11:35:00-04:00", "startedAt": "2026-09-23T10:00:00-04:00",
+                    "checkpoint": "project-writeback", "errorCode": "RETRY_LIMIT"
+                ]
+            ],
+            "retries": [[
+                "retryID": "retry-planning-002", "workflowID": "workflow-planning-001", "attemptNumber": 2,
+                "state": "scheduled", "reasonCode": "SOURCE_PARTIAL", "scheduledAt": "2026-09-23T12:15:00-04:00", "backoffSeconds": 900
+            ]],
+            "deadLetters": [[
+                "deadLetterID": "deadletter-meeting-001", "workflowID": "workflow-meeting-001",
+                "createdAt": "2026-09-23T11:35:00-04:00", "reasonCode": "RETRY_LIMIT",
+                "attemptCount": 4, "replayEligibility": "requires-review", "recoveryInstructionID": "recovery-runtime-001"
+            ]],
+            "externalActions": [[
+                "actionID": "action-calendar-001", "kind": "calendar-write", "targetLabel": "Primary work calendar",
+                "state": "proposed", "confirmationRequired": true, "readbackStatus": "missing", "retrySafe": false
+            ]],
+            "commitments": [[
+                "commitmentID": "commitment-foundry-001", "title": "Prepare the bounded daily report", "state": "active",
+                "ownerLabel": "Chris", "dueAt": "2026-09-23T17:00:00-04:00", "consequence": "Stakeholder update delayed",
+                "evidenceStatus": "supported", "decisionIDs": ["decision-foundry-001"]
+            ]],
+            "decisions": [[
+                "decisionID": "decision-foundry-001", "title": "Use the governed report route", "state": "decided",
+                "ownerLabel": "Chris", "decidedAt": "2026-09-23T09:00:00-04:00", "evidenceStatus": "validated",
+                "commitmentIDs": ["commitment-foundry-001"]
+            ]],
+            "sources": [[
+                "sourceID": "outlook-calendar", "status": "partial", "scopeLabel": "Current local day",
+                "attemptedAt": "2026-09-23T11:30:00-04:00", "succeededAt": "2026-09-23T11:30:00-04:00",
+                "itemCount": 5, "processedCount": 4, "unresolvedCount": 1, "freshness": "fresh", "errorCode": "ONE_UNRESOLVED"
+            ]],
+            "connections": [[
+                "connectionID": "connection-outlook-calendar", "sourceID": "outlook-calendar", "status": "connected",
+                "authenticationState": "authenticated", "coverageState": "unknown", "lastCheckedAt": "2026-09-23T11:30:00-04:00",
+                "diagnosticCodes": ["CONTENT_COVERAGE_UNKNOWN"]
+            ]],
+            "compatibility": [
+                "projectionSchemaVersion": 1, "minimumAppVersion": "0.4.0", "maximumAppVersion": "0.4.99",
+                "status": "compatible", "issueCodes": []
+            ],
+            "migrations": [[
+                "migrationID": "migration-runtime-001", "fromVersion": "0.9.0", "toVersion": "1.0.0", "state": "applied",
+                "reversible": true, "appliedAt": "2026-09-23T10:00:00-04:00", "safeSummary": "Runtime state upgraded to the governed schema."
+            ]],
+            "alerts": [[
+                "alertID": "alert-runtime-001", "severity": "warning", "category": "source-health", "state": "open",
+                "title": "Calendar coverage is partial", "safeSummary": "One normalized item remains unresolved.",
+                "raisedAt": "2026-09-23T11:30:00-04:00", "recoveryInstructionIDs": ["recovery-runtime-001"]
+            ]],
+            "recoveryInstructions": [[
+                "instructionID": "recovery-runtime-001", "title": "Inspect the failed bounded collection",
+                "steps": ["Review the privacy-reduced source diagnostic.", "Retry the bounded collection after the source is available."],
+                "actionBoundary": "local-governed", "relatedIDs": ["workflow-planning-001", "outlook-calendar"]
+            ]],
+            "coverage": runtimeCoverage(workflows: 2, retries: 1, deadLetters: 1, actions: 1, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1, unresolved: 5)
+        ]
+    }
+
+    private func runtimeCoverage(
+        workflows: Int = 0, retries: Int = 0, deadLetters: Int = 0, actions: Int = 0,
+        commitments: Int = 0, decisions: Int = 0, sources: Int = 0, connections: Int = 0,
+        migrations: Int = 0, alerts: Int = 0, recovery: Int = 0, unresolved: Int = 0
+    ) -> [String: Any] {
+        [
+            "workflowCount": workflows, "retryCount": retries, "deadLetterCount": deadLetters,
+            "externalActionCount": actions, "commitmentCount": commitments, "decisionCount": decisions,
+            "sourceCount": sources, "connectionCount": connections, "migrationCount": migrations,
+            "alertCount": alerts, "recoveryInstructionCount": recovery, "unresolvedCount": unresolved
+        ]
     }
 
     private func instant(_ value: String) -> Date {
