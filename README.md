@@ -87,7 +87,8 @@ Each of its six views writes its own readback receipt only after the current
 projection passes digest, freshness, denominator, privacy, and compatibility
 checks. A retained last-valid projection is visibly stale and produces no
 receipt. Single-user pilot acceptance never enables an enterprise-readiness
-claim. See [Priority 4 Evaluation](docs/PRIORITY-4-EVALUATION.md).
+claim. See [Priority 4 Evaluation](docs/PRIORITY-4-EVALUATION.md) and the
+[Command Center 0.4.2 release record](docs/RELEASE-0.4.2.md).
 
 ## Release boundary
 
