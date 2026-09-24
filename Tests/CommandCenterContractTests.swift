@@ -140,7 +140,7 @@ final class CommandCenterContractTests: XCTestCase {
         professionalCount: Int = 1,
         personalStatement: Bool = false,
         professionalStatement: String = "Chris prefers concise evidence-backed briefs.",
-        governanceReason: String = "Preference corrected.",
+        governanceReason: String = "Withheld from privacy-reduced projection.",
         playbookAudience: String = "Approved collaborator"
     ) throws -> TwinInspectionProjection {
         let privateStatement = personalStatement ? #", "statement": "Private material""# : ""

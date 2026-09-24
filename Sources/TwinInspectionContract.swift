@@ -153,7 +153,7 @@ struct TwinGovernanceEvent: Decodable, Identifiable {
     let result: String
 
     var containsProhibitedMaterial: Bool {
-        TwinProjectionPrivacy.containsProhibited([reason])
+        reason != "Withheld from privacy-reduced projection." || TwinProjectionPrivacy.containsProhibited([reason])
     }
 }
 
