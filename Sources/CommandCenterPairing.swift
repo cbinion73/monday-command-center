@@ -46,6 +46,23 @@ struct MondayPluginVersion: Comparable {
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.parts.lexicographicallyPrecedes(rhs.parts) }
 }
 
+struct MondayPluginReleaseVersion: Comparable {
+    let semantic: MondayPluginVersion
+    let build: UInt64
+
+    init?(_ value: String) {
+        guard let semantic = MondayPluginVersion(value) else { return nil }
+        self.semantic = semantic
+        let metadata = value.split(separator: "+", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
+        let trailingDigits = metadata.split(separator: ".").last.map(String.init) ?? ""
+        build = UInt64(trailingDigits) ?? 0
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        lhs.semantic == rhs.semantic ? lhs.build < rhs.build : lhs.semantic < rhs.semantic
+    }
+}
+
 enum MondayRuntimePluginInspector {
     static func validate(pluginURL: URL, appVersion: String) -> MondayRuntimePluginValidation {
         let manifestURL = pluginURL.appendingPathComponent(".codex-plugin/plugin.json")
@@ -171,6 +188,7 @@ final class CommandCenterPairing: ObservableObject {
         meetingNotesURL = defaults.string(forKey: Key.meetingNotes).map { URL(fileURLWithPath: $0, isDirectory: true) } ?? Self.discoveredMeetingNotes().first
         weatherAddress = defaults.string(forKey: Key.weatherAddress) ?? defaults.string(forKey: "weatherLocation") ?? ""
         discardInvalidLocations()
+        adoptLatestManagedPluginIfNeeded()
     }
 
     var isPaired: Bool { pluginURL != nil && projectsDirectoryURL != nil }
@@ -268,6 +286,20 @@ final class CommandCenterPairing: ObservableObject {
         persist()
     }
 
+    private func adoptLatestManagedPluginIfNeeded() {
+        guard let current = pluginURL?.standardizedFileURL,
+              Self.isManagedCachePlugin(current),
+              let preferred = Self.newestManagedPlugin(from: Self.discoveredPlugins()),
+              Self.isManagedCachePlugin(preferred),
+              preferred.standardizedFileURL != current,
+              let currentRelease = Self.pluginReleaseVersion(at: current),
+              let preferredRelease = Self.pluginReleaseVersion(at: preferred),
+              preferredRelease > currentRelease else { return }
+        pluginURL = preferred.standardizedFileURL
+        persist()
+        revision += 1
+    }
+
     private func persist() {
         UserDefaults.standard.set(pluginURL?.path, forKey: Key.plugin)
         UserDefaults.standard.set(projectVaultURL?.path, forKey: Key.projectVault)
@@ -301,7 +333,35 @@ final class CommandCenterPairing: ObservableObject {
                 if isMondayPlugin(pluginURL) { candidates.append(pluginURL) }
             }
         }
-        return Array(Set(candidates.map { $0.standardizedFileURL })).sorted { modifiedDate(for: $0) > modifiedDate(for: $1) }
+        return sortedPlugins(Array(Set(candidates.map { $0.standardizedFileURL })))
+    }
+
+    static func newestManagedPlugin(from candidates: [URL]) -> URL? { sortedPlugins(candidates).first }
+
+    private static func sortedPlugins(_ candidates: [URL]) -> [URL] {
+        candidates.sorted { left, right in
+            switch (pluginReleaseVersion(at: left), pluginReleaseVersion(at: right)) {
+            case let (lhs?, rhs?) where lhs != rhs: return lhs > rhs
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return modifiedDate(for: left) > modifiedDate(for: right)
+            }
+        }
+    }
+
+    private static func pluginReleaseVersion(at url: URL) -> MondayPluginReleaseVersion? {
+        let manifest = url.appendingPathComponent(".codex-plugin/plugin.json")
+        guard let data = try? Data(contentsOf: manifest),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              value["name"] as? String == "monday",
+              let version = value["version"] as? String else { return nil }
+        return MondayPluginReleaseVersion(version)
+    }
+
+    private static func isManagedCachePlugin(_ url: URL) -> Bool {
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/plugins/cache", isDirectory: true).standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/")
     }
 
     private static func discoveredProjectVaults() -> [URL] {

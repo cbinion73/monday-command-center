@@ -2,6 +2,29 @@ import XCTest
 @testable import Command_Center
 
 final class CommandCenterContractTests: XCTestCase {
+    func testInstalledPluginReleaseOrderingUsesImmutableBuildMetadata() throws {
+        let older = try XCTUnwrap(MondayPluginReleaseVersion("0.1.0+codex.20260924173012"))
+        let newer = try XCTUnwrap(MondayPluginReleaseVersion("0.1.0+codex.20260924174602"))
+        XCTAssertLessThan(older, newer)
+        XCTAssertLessThan(newer, try XCTUnwrap(MondayPluginReleaseVersion("0.1.1")))
+    }
+
+    @MainActor
+    func testNewestManagedPluginPrefersVersionOverDirectoryModificationDate() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let older = root.appendingPathComponent("0.1.0+codex.20260924173012", isDirectory: true)
+        let newer = root.appendingPathComponent("0.1.0+codex.20260924174602", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (url, version) in [(older, "0.1.0+codex.20260924173012"), (newer, "0.1.0+codex.20260924174602")] {
+            let manifest = url.appendingPathComponent(".codex-plugin", isDirectory: true)
+            try FileManager.default.createDirectory(at: manifest, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: ["name": "monday", "version": version])
+            try data.write(to: manifest.appendingPathComponent("plugin.json"))
+        }
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(3600)], ofItemAtPath: older.path)
+        XCTAssertEqual(CommandCenterPairing.newestManagedPlugin(from: [older, newer])?.standardizedFileURL, newer.standardizedFileURL)
+    }
+
     func testCommandCenterRoomLaunchRouting() {
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center"]), .today)
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "digitalTwin"]), .digitalTwin)

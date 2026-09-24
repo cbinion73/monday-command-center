@@ -10,13 +10,14 @@ MONDAY plugin.
 ## Current status
 
 This repository is public so the Command Center interface can be shared and
-reviewed. Command Center v0.4.2 is a read-oriented companion for a person who has
+reviewed. Command Center v0.4.3 is a read-oriented companion for a person who has
 already installed the consolidated `monday` plugin. Planning, Personal, and
 Thermo are capability families inside that plugin. It ships no credentials, personal
 data, tokens, or user-specific file paths.
 
 On first launch, Command Center looks only in Codex's local plugin cache and
-MONDAY's documented vault locations. Command Center 0.4.2 adds read-only Digital
+MONDAY's documented vault locations. Command Center 0.4.3 adds automatic managed-plugin
+release rollover while retaining the read-only Digital
 Twin, Runtime Operations, and Evaluation & Pilot inspection rooms. When it finds a valid installed plugin and
 recipient-owned Project Knowledge vault, it pairs automatically. If either is
 missing or nonstandard, Settings opens with its best verified suggestions:
@@ -88,7 +89,7 @@ projection passes digest, freshness, denominator, privacy, and compatibility
 checks. A retained last-valid projection is visibly stale and produces no
 receipt. Single-user pilot acceptance never enables an enterprise-readiness
 claim. See [Priority 4 Evaluation](docs/PRIORITY-4-EVALUATION.md) and the
-[Command Center 0.4.2 release record](docs/RELEASE-0.4.2.md).
+[Command Center 0.4.3 release record](docs/RELEASE-0.4.3.md).
 
 ## Release boundary
 
