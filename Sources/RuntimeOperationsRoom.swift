@@ -76,12 +76,10 @@ struct RuntimeOperationsRoom: View {
     }
 
     private var sectionPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Section.allCases) { item in
-                    Button(item.rawValue) { section = item }
-                        .buttonStyle(RuntimeTabStyle(selected: section == item))
-                }
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
+            ForEach(Section.allCases) { item in
+                Button(item.rawValue) { section = item }
+                    .buttonStyle(RuntimeTabStyle(selected: section == item))
             }
         }
     }
@@ -351,6 +349,7 @@ private struct RuntimeTabStyle: ButtonStyle {
     let selected: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 12, weight: .semibold, design: .rounded))
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(selected ? DashboardPalette.accent.opacity(0.19) : Color.white.opacity(configuration.isPressed ? 0.09 : 0.05), in: Capsule())
             .foregroundStyle(selected ? DashboardPalette.accent : .white.opacity(0.68))
