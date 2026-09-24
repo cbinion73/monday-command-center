@@ -25,7 +25,7 @@ struct RuntimeOperationsProjection: Decodable {
     let coverage: RuntimeCoverage
 
     func validation(appVersion: String, now: Date = .now) -> RuntimeProjectionValidation {
-        guard schemaVersion == 1 else { return .unsupportedSchema(schemaVersion) }
+        guard schemaVersion == 2 else { return .unsupportedSchema(schemaVersion) }
         guard projectionID.range(of: #"^runtime-[a-zA-Z0-9._-]{8,160}$"#, options: .regularExpression) != nil else { return .missingProjectionIdentifier }
         guard contentDigest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
               projectionID.hasSuffix(String(contentDigest.prefix(12))) else { return .invalidContentDigest }
@@ -231,11 +231,17 @@ struct RuntimeExternalAction: Decodable, Identifiable {
 
     var isValid: Bool {
         guard RuntimeProjectionPrivacy.isOpaqueIdentifier(actionID),
-              ["proposed", "confirmed", "attempted", "verified", "failed", "cancelled"].contains(state),
-              ["not-required", "missing", "matched", "mismatched"].contains(readbackStatus) else { return false }
-        if confirmationRequired && ["confirmed", "attempted", "verified", "failed"].contains(state) && confirmedAt == nil { return false }
-        if ["attempted", "verified", "failed"].contains(state) && attemptedAt == nil { return false }
-        if state == "verified" && (verifiedAt == nil || readbackStatus != "matched") { return false }
+              ["confirmation-required", "confirmed", "attempting", "attempted", "verified", "failed-before-dispatch", "indeterminate", "cancelled"].contains(state),
+              ["missing", "matched", "indeterminate"].contains(readbackStatus),
+              confirmationRequired == ["confirmation-required", "failed-before-dispatch"].contains(state),
+              !retrySafe || state == "failed-before-dispatch" else { return false }
+        if ["confirmed", "attempting", "attempted", "verified", "failed-before-dispatch", "indeterminate"].contains(state) && confirmedAt == nil { return false }
+        if ["attempting", "attempted", "verified", "failed-before-dispatch", "indeterminate"].contains(state) && attemptedAt == nil { return false }
+        if state == "verified" && readbackStatus != "matched" { return false }
+        if state == "failed-before-dispatch" && !["missing", "matched"].contains(readbackStatus) { return false }
+        if state == "indeterminate" && readbackStatus != "indeterminate" { return false }
+        if ["confirmation-required", "confirmed", "attempting", "attempted", "cancelled"].contains(state) && readbackStatus != "missing" { return false }
+        if state == "verified" && verifiedAt == nil { return false }
         if state != "verified" && verifiedAt != nil { return false }
         if let confirmedAt, let attemptedAt, attemptedAt < confirmedAt { return false }
         if let attemptedAt, let verifiedAt, verifiedAt < attemptedAt { return false }
@@ -333,21 +339,30 @@ struct RuntimeConnection: Decodable, Identifiable {
 
 struct RuntimeCompatibility: Decodable {
     let projectionSchemaVersion: Int
+    let pluginVersion: String
+    let capabilityVersion: String
+    let databaseSchemaVersion: Int
+    let readbackSchemaVersion: Int
     let minimumAppVersion: String
     let maximumAppVersion: String?
     let status: String
     let issueCodes: [String]
+    let upgradePolicy: String
+    let downgradePolicy: String
+    let rollbackPolicy: String
 
     func isValid(appVersion: String) -> Bool {
-        guard projectionSchemaVersion == 1,
+        guard projectionSchemaVersion == 2, databaseSchemaVersion == 2, readbackSchemaVersion == 1,
+              capabilityVersion == "2.0.0", MondayPluginVersion(pluginVersion) != nil,
               ["compatible", "update-required", "migration-required", "incompatible"].contains(status),
               RuntimeSemanticVersion(appVersion) != nil,
               let minimum = RuntimeSemanticVersion(minimumAppVersion),
-              let current = RuntimeSemanticVersion(appVersion), current >= minimum else { return false }
-        if let maximumAppVersion, let maximum = RuntimeSemanticVersion(maximumAppVersion), current > maximum { return false }
+              let maximumAppVersion, let maximum = RuntimeSemanticVersion(maximumAppVersion),
+              let current = RuntimeSemanticVersion(appVersion), current >= minimum, current < maximum,
+              !upgradePolicy.isEmpty, !downgradePolicy.isEmpty, !rollbackPolicy.isEmpty else { return false }
         return status == "compatible" || status == "migration-required"
     }
-    var containsProhibitedMaterial: Bool { RuntimeProjectionPrivacy.containsProhibited([minimumAppVersion, maximumAppVersion, status].compactMap { $0 } + issueCodes) }
+    var containsProhibitedMaterial: Bool { RuntimeProjectionPrivacy.containsProhibited([pluginVersion, capabilityVersion, minimumAppVersion, maximumAppVersion, status, upgradePolicy, downgradePolicy, rollbackPolicy].compactMap { $0 } + issueCodes) }
 }
 
 struct RuntimeMigration: Decodable, Identifiable {
@@ -378,16 +393,33 @@ struct RuntimeAlert: Decodable, Identifiable {
     let title: String
     let safeSummary: String
     let raisedAt: Date
+    let firstSeen: Date
+    let lastSeen: Date
+    let count: Int
+    let status: String
+    let acknowledgedAt: Date?
+    let suppressedUntil: Date?
     let resolvedAt: Date?
+    let sourceKind: String
+    let evidenceIDs: [String]
     let recoveryInstructionIDs: [String]
 
     var isValid: Bool {
-        RuntimeProjectionPrivacy.isOpaqueIdentifier(alertID)
+        guard RuntimeProjectionPrivacy.isOpaqueIdentifier(alertID)
             && ["info", "warning", "error", "critical"].contains(severity)
             && ["open", "acknowledged", "resolved"].contains(state)
-            && (state == "resolved" ? resolvedAt != nil : resolvedAt == nil)
+            && ["open", "acknowledged", "resolved"].contains(status)
+            && ["runtime-derived", "external-monitor"].contains(sourceKind)
+            && state == status && count >= 1 && firstSeen <= lastSeen && raisedAt == firstSeen else { return false }
+        if status == "open" && (acknowledgedAt != nil || resolvedAt != nil) { return false }
+        if status == "acknowledged" && (acknowledgedAt == nil || resolvedAt != nil) { return false }
+        if status == "resolved" && resolvedAt == nil { return false }
+        if let acknowledgedAt, acknowledgedAt < firstSeen { return false }
+        if let resolvedAt, resolvedAt < firstSeen { return false }
+        if let suppressedUntil, suppressedUntil < firstSeen { return false }
+        return true
     }
-    var containsProhibitedMaterial: Bool { RuntimeProjectionPrivacy.containsProhibited([alertID, severity, category, state, title, safeSummary] + recoveryInstructionIDs) }
+    var containsProhibitedMaterial: Bool { RuntimeProjectionPrivacy.containsProhibited([alertID, severity, category, state, title, safeSummary, status, sourceKind] + evidenceIDs + recoveryInstructionIDs) }
 }
 
 struct RuntimeRecoveryInstruction: Decodable, Identifiable {
@@ -395,14 +427,18 @@ struct RuntimeRecoveryInstruction: Decodable, Identifiable {
     let instructionID: String
     let title: String
     let steps: [String]
+    let verificationSteps: [String]
+    let rollbackSteps: [String]
     let actionBoundary: String
     let relatedIDs: [String]
+    let evidenceIDs: [String]
 
     var isValid: Bool {
         RuntimeProjectionPrivacy.isOpaqueIdentifier(instructionID) && !steps.isEmpty && steps.count <= 12
+            && !verificationSteps.isEmpty && verificationSteps.count <= 12 && rollbackSteps.count <= 12
             && ["local-read-only", "local-governed", "requires-confirmation"].contains(actionBoundary)
     }
-    var containsProhibitedMaterial: Bool { RuntimeProjectionPrivacy.containsProhibited([instructionID, title, actionBoundary] + steps + relatedIDs) }
+    var containsProhibitedMaterial: Bool { RuntimeProjectionPrivacy.containsProhibited([instructionID, title, actionBoundary] + steps + verificationSteps + rollbackSteps + relatedIDs + evidenceIDs) }
 }
 
 struct RuntimeCoverage: Decodable {
@@ -545,10 +581,10 @@ private enum RuntimeProjectionShape {
         try validateArray(object["decisions"], at: "decisions", allowed: ["decisionID", "title", "state", "ownerLabel", "decidedAt", "evidenceStatus", "commitmentIDs"], required: ["decisionID", "title", "state", "ownerLabel", "evidenceStatus", "commitmentIDs"])
         try validateArray(object["sources"], at: "sources", allowed: ["sourceID", "status", "scopeLabel", "attemptedAt", "succeededAt", "itemCount", "processedCount", "unresolvedCount", "freshness", "errorCode"], required: ["sourceID", "status", "scopeLabel", "itemCount", "processedCount", "unresolvedCount", "freshness"])
         try validateArray(object["connections"], at: "connections", exact: ["connectionID", "sourceID", "status", "authenticationState", "coverageState", "lastCheckedAt", "diagnosticCodes"])
-        try validateObject(object["compatibility"], at: "compatibility", allowed: ["projectionSchemaVersion", "minimumAppVersion", "maximumAppVersion", "status", "issueCodes"], required: ["projectionSchemaVersion", "minimumAppVersion", "status", "issueCodes"])
+        try validateObject(object["compatibility"], at: "compatibility", exact: ["projectionSchemaVersion", "pluginVersion", "capabilityVersion", "databaseSchemaVersion", "readbackSchemaVersion", "minimumAppVersion", "maximumAppVersion", "status", "issueCodes", "upgradePolicy", "downgradePolicy", "rollbackPolicy"])
         try validateArray(object["migrations"], at: "migrations", allowed: ["migrationID", "fromVersion", "toVersion", "state", "reversible", "appliedAt", "safeSummary"], required: ["migrationID", "fromVersion", "toVersion", "state", "reversible", "safeSummary"])
-        try validateArray(object["alerts"], at: "alerts", allowed: ["alertID", "severity", "category", "state", "title", "safeSummary", "raisedAt", "resolvedAt", "recoveryInstructionIDs"], required: ["alertID", "severity", "category", "state", "title", "safeSummary", "raisedAt", "recoveryInstructionIDs"])
-        try validateArray(object["recoveryInstructions"], at: "recoveryInstructions", exact: ["instructionID", "title", "steps", "actionBoundary", "relatedIDs"])
+        try validateArray(object["alerts"], at: "alerts", allowed: ["alertID", "severity", "category", "state", "title", "safeSummary", "raisedAt", "firstSeen", "lastSeen", "count", "status", "acknowledgedAt", "suppressedUntil", "resolvedAt", "sourceKind", "evidenceIDs", "recoveryInstructionIDs"], required: ["alertID", "severity", "category", "state", "title", "safeSummary", "raisedAt", "firstSeen", "lastSeen", "count", "status", "suppressedUntil", "sourceKind", "evidenceIDs", "recoveryInstructionIDs"])
+        try validateArray(object["recoveryInstructions"], at: "recoveryInstructions", exact: ["instructionID", "title", "steps", "verificationSteps", "rollbackSteps", "actionBoundary", "relatedIDs", "evidenceIDs"])
         try validateObject(object["coverage"], at: "coverage", exact: ["workflowCount", "retryCount", "deadLetterCount", "externalActionCount", "commitmentCount", "decisionCount", "sourceCount", "connectionCount", "migrationCount", "alertCount", "recoveryInstructionCount", "unresolvedCount"])
     }
 

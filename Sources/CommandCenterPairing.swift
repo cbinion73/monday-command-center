@@ -2,6 +2,85 @@ import AppKit
 import Foundation
 import SwiftUI
 
+enum MondayRuntimePluginValidation: Equatable {
+    case compatible(pluginVersion: String)
+    case upgradeRequired(reason: String)
+
+    var isCompatible: Bool {
+        if case .compatible = self { return true }
+        return false
+    }
+
+    var message: String {
+        switch self {
+        case .compatible(let version): "MONDAY \(version) provides runtime capability 2.0.0 and Operations schema 2."
+        case .upgradeRequired(let reason): "Upgrade Required: \(reason) Planner and Digital Twin remain available."
+        }
+    }
+}
+
+struct MondayPluginVersion: Comparable {
+    let parts: [Int]
+    init?(_ value: String) {
+        let base = value.split(separator: "+", maxSplits: 1).first.map(String.init) ?? value
+        let components = base.split(separator: ".", omittingEmptySubsequences: false)
+        guard components.count == 3, components.allSatisfy({ Int($0) != nil }) else { return nil }
+        parts = components.map { Int($0)! }
+    }
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.parts.lexicographicallyPrecedes(rhs.parts) }
+}
+
+enum MondayRuntimePluginInspector {
+    static func validate(pluginURL: URL, appVersion: String) -> MondayRuntimePluginValidation {
+        let manifestURL = pluginURL.appendingPathComponent(".codex-plugin/plugin.json")
+        guard let manifest = jsonObject(at: manifestURL), manifest["name"] as? String == "monday",
+              let version = manifest["version"] as? String,
+              let parsedVersion = MondayPluginVersion(version),
+              let minimum = MondayPluginVersion("0.1.0"), let maximum = MondayPluginVersion("0.2.0"),
+              parsedVersion >= minimum, parsedVersion < maximum else {
+            return .upgradeRequired(reason: "The selected folder is not a supported primary monday plugin version (requires 0.1.x).")
+        }
+
+        let runtimeSkill = pluginURL.appendingPathComponent("skills/monday-runtime/SKILL.md")
+        guard FileManager.default.fileExists(atPath: runtimeSkill.path) else {
+            return .upgradeRequired(reason: "The primary plugin does not contain the monday-runtime capability.")
+        }
+
+        let registryURL = pluginURL.appendingPathComponent("skills/monday-core/references/capability-registry.json")
+        guard let registry = jsonObject(at: registryURL), registry["schemaVersion"] as? Int == 1,
+              let capabilities = registry["capabilities"] as? [[String: Any]],
+              capabilities.contains(where: { $0["id"] as? String == "monday-runtime" }) else {
+            return .upgradeRequired(reason: "The primary capability registry does not route monday-runtime.")
+        }
+
+        let matrixURL = pluginURL.appendingPathComponent("skills/monday-runtime/references/compatibility-matrix.json")
+        guard let matrix = jsonObject(at: matrixURL),
+              matrix["schemaVersion"] as? Int == 2,
+              matrix["runtimeDatabaseVersion"] as? Int == 2,
+              matrix["operationsProjectionVersion"] as? Int == 2,
+              matrix["operationsReadbackVersion"] as? Int == 1,
+              matrix["capabilityVersion"] as? String == "2.0.0",
+              let supported = matrix["supportedAppVersions"] as? [String: Any],
+              let minimumApp = supported["minimumInclusive"] as? String,
+              let maximumApp = supported["maximumExclusive"] as? String,
+              appIsSupported(appVersion, minimum: minimumApp, maximumExclusive: maximumApp) else {
+            return .upgradeRequired(reason: "MONDAY does not advertise runtime DB 2, Operations schema 2, readback schema 1, and support for this app version.")
+        }
+        return .compatible(pluginVersion: version)
+    }
+
+    private static func jsonObject(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object
+    }
+
+    private static func appIsSupported(_ value: String, minimum: String, maximumExclusive: String) -> Bool {
+        guard let current = MondayPluginVersion(value), let lower = MondayPluginVersion(minimum), let upper = MondayPluginVersion(maximumExclusive) else { return false }
+        return current >= lower && current < upper
+    }
+}
+
 /// User-approved local locations. Command Center reads them but never stores
 /// Codex, calendar, or vault credentials.
 @MainActor
@@ -50,6 +129,11 @@ final class CommandCenterPairing: ObservableObject {
     }
 
     var isPaired: Bool { pluginURL != nil && projectsDirectoryURL != nil }
+    var runtimePluginValidation: MondayRuntimePluginValidation {
+        guard let pluginURL else { return .upgradeRequired(reason: "No primary MONDAY plugin is paired.") }
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.1"
+        return MondayRuntimePluginInspector.validate(pluginURL: pluginURL, appVersion: appVersion)
+    }
     var projectsDirectoryURL: URL? {
         guard let projectVaultURL else { return nil }
         let projects = projectVaultURL.appendingPathComponent("03 Projects", isDirectory: true)
@@ -261,6 +345,13 @@ struct CommandCenterPairingView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             PairingPathRow(title: "Installed MONDAY plugin", detail: "Required. Select the consolidated monday plugin folder.", url: pluginURL) { pluginURL = chooseDirectory(prompt: "Select your installed MONDAY plugin") }
+            if let pluginURL {
+                let validation = MondayRuntimePluginInspector.validate(pluginURL: pluginURL, appVersion: appVersion)
+                Label(validation.message, systemImage: validation.isCompatible ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(validation.isCompatible ? Color.green : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             PairingPathRow(title: "Project Knowledge vault", detail: "Required. Select the vault containing 03 Projects.", url: projectVaultURL) { projectVaultURL = chooseDirectory(prompt: "Select your Project Knowledge vault") }
             PairingPathRow(title: "Personal Project Knowledge", detail: "Optional and private. Default: Knowledge Vault/Personal Project Knowledge.", url: personalProjectVaultURL) { personalProjectVaultURL = chooseDirectory(prompt: "Select your Personal Project Knowledge vault") }
             PairingPathRow(title: "Captain's Log", detail: "Personal journal. Default: Chris Knowledge/500 Personal Journal.", url: captainsLogURL) { captainsLogURL = chooseDirectory(prompt: "Select your Captain's Log folder") }
@@ -308,6 +399,8 @@ struct CommandCenterPairingView: View {
         let panel = NSOpenPanel(); panel.message = prompt; panel.prompt = "Choose"; panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url : nil
     }
+
+    private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.1" }
 }
 
 private struct PairingPathRow: View {

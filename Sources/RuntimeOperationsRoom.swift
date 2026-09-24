@@ -1,5 +1,21 @@
 import SwiftUI
 
+enum RuntimeActionPresentation {
+    static func safetyText(_ state: String) -> String {
+        switch state {
+        case "confirmation-required": "No attempt is authorized. Confirmation must bind this exact action digest."
+        case "confirmed": "One attempt is authorized. Nothing has been dispatched or completed yet."
+        case "attempting": "One attempt identifier has been issued. Do not issue another attempt."
+        case "attempted": "The connector reported an attempt. This is not verified completion."
+        case "verified": "Destination-native readback matched the action and attempt."
+        case "failed-before-dispatch": "Evidence shows no dispatch. Any new attempt still requires fresh confirmation."
+        case "indeterminate": "The effect may have occurred. Never retry until source-native readback resolves it."
+        case "cancelled": "The governed proposal was cancelled. No verified effect is claimed."
+        default: "Unsupported action state. Stop and update MONDAY."
+        }
+    }
+}
+
 struct RuntimeOperationsRoom: View {
     private enum Section: String, CaseIterable, Identifiable {
         case overview = "Overview"
@@ -29,6 +45,7 @@ struct RuntimeOperationsRoom: View {
     @State private var lastValidProjection: RuntimeOperationsProjection?
     @State private var section: Section = .overview
     @State private var errorMessage: String?
+    @ObservedObject private var pairing = CommandCenterPairing.shared
 
     var body: some View {
         ZStack {
@@ -56,6 +73,7 @@ struct RuntimeOperationsRoom: View {
             }
         }
         .task(id: section) { await writeReadbackForVisibleSection() }
+        .task(id: pairing.revision) { await refresh() }
     }
 
     private var header: some View {
@@ -217,8 +235,13 @@ struct RuntimeOperationsRoom: View {
                 card(action.kind.replacingOccurrences(of: "-", with: " ").capitalized, icon: "arrow.up.right.square.fill") {
                     HStack { statusPill(action.state); statusPill(action.readbackStatus); Spacer(); Text(action.actionID).font(.caption2.monospaced()).foregroundStyle(.white.opacity(0.38)) }
                     Text("Target: \(action.targetLabel)").foregroundStyle(.white.opacity(0.72))
-                    Text(action.confirmationRequired ? "Confirmation required before attempt" : "No additional confirmation required by this record").font(.caption).foregroundStyle(action.confirmationRequired ? .orange : .green)
-                    Text(action.retrySafe ? "A controlled retry is permitted." : "Do not retry automatically.").font(.caption).foregroundStyle(.white.opacity(0.5))
+                    Label(RuntimeActionPresentation.safetyText(action.state), systemImage: action.state == "verified" ? "checkmark.seal.fill" : "hand.raised.fill")
+                        .font(.caption.bold()).foregroundStyle(action.state == "verified" ? .green : .orange)
+                    Text("External effects never retry automatically. A fresh digest-bound confirmation is required for every new attempt.")
+                        .font(.caption).foregroundStyle(.white.opacity(0.5))
+                    if let confirmed = action.confirmedAt { Text("Confirmed \(confirmed.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.white.opacity(0.42)) }
+                    if let attempted = action.attemptedAt { Text("Attempt issued \(attempted.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.white.opacity(0.42)) }
+                    if let verified = action.verifiedAt { Text("Verified by destination-native readback \(verified.formatted(date: .abbreviated, time: .shortened))").font(.caption2).foregroundStyle(.green.opacity(0.85)) }
                 }
             }
         }
@@ -228,7 +251,12 @@ struct RuntimeOperationsRoom: View {
         VStack(alignment: .leading, spacing: 14) {
             card("Compatibility", icon: "arrow.triangle.2.circlepath") {
                 HStack { statusPill(value.compatibility.status); Text("Projection schema \(value.compatibility.projectionSchemaVersion)").foregroundStyle(.white.opacity(0.7)) }
-                Text("Supported app range: \(value.compatibility.minimumAppVersion) through \(value.compatibility.maximumAppVersion ?? "current and later")").font(.caption).foregroundStyle(.white.opacity(0.52))
+                Text("Plugin \(value.compatibility.pluginVersion) · capability \(value.compatibility.capabilityVersion) · database \(value.compatibility.databaseSchemaVersion) · readback \(value.compatibility.readbackSchemaVersion)")
+                    .font(.caption).foregroundStyle(.white.opacity(0.62))
+                Text("Supported app range: \(value.compatibility.minimumAppVersion) up to, but not including, \(value.compatibility.maximumAppVersion ?? "the next declared boundary")").font(.caption).foregroundStyle(.white.opacity(0.52))
+                Text("Upgrade: \(value.compatibility.upgradePolicy)").font(.caption).foregroundStyle(.white.opacity(0.52))
+                Text("Downgrade: \(value.compatibility.downgradePolicy)").font(.caption).foregroundStyle(.white.opacity(0.52))
+                Text("Rollback: \(value.compatibility.rollbackPolicy)").font(.caption).foregroundStyle(.white.opacity(0.52))
                 ForEach(value.compatibility.issueCodes, id: \.self) { Text("• \($0)").font(.caption).foregroundStyle(.orange) }
             }
             Text("MIGRATIONS").font(.caption.bold()).tracking(1.3).foregroundStyle(DashboardPalette.accent)
@@ -248,8 +276,13 @@ struct RuntimeOperationsRoom: View {
             if value.alerts.isEmpty { empty("No operational alerts are projected.") }
             ForEach(value.alerts) { alert in
                 card(alert.title, icon: alert.severity == "critical" ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill") {
-                    HStack { statusPill(alert.severity); statusPill(alert.state); Text(alert.category).font(.caption).foregroundStyle(.white.opacity(0.48)) }
+                    HStack { statusPill(alert.severity); statusPill(alert.status); statusPill(alert.sourceKind); Text(alert.category).font(.caption).foregroundStyle(.white.opacity(0.48)) }
                     Text(alert.safeSummary).foregroundStyle(.white.opacity(0.72))
+                    Text("First seen \(alert.firstSeen.formatted(date: .abbreviated, time: .shortened)) · last seen \(alert.lastSeen.formatted(date: .abbreviated, time: .shortened)) · \(alert.count) occurrence\(alert.count == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.white.opacity(0.52))
+                    if let acknowledged = alert.acknowledgedAt { Text("Acknowledged \(acknowledged.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(DashboardPalette.accent) }
+                    if let suppressed = alert.suppressedUntil { Text("Notification suppressed until \(suppressed.formatted(date: .abbreviated, time: .shortened)); the alert remains visible.").font(.caption).foregroundStyle(.orange) }
+                    if let resolved = alert.resolvedAt { Text("Resolved after authoritative verification \(resolved.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.green) }
                     if !alert.recoveryInstructionIDs.isEmpty { Text("Recovery: \(alert.recoveryInstructionIDs.joined(separator: ", "))").font(.caption).foregroundStyle(DashboardPalette.accent) }
                 }
             }
@@ -260,6 +293,18 @@ struct RuntimeOperationsRoom: View {
                     statusPill(instruction.actionBoundary)
                     ForEach(Array(instruction.steps.enumerated()), id: \.offset) { index, step in
                         Text("\(index + 1). \(step)").foregroundStyle(.white.opacity(0.72))
+                    }
+                    Text("VERIFY").font(.caption2.bold()).tracking(1.0).foregroundStyle(.green).padding(.top, 4)
+                    ForEach(Array(instruction.verificationSteps.enumerated()), id: \.offset) { index, step in
+                        Text("\(index + 1). \(step)").font(.caption).foregroundStyle(.green.opacity(0.85))
+                    }
+                    Text("ROLLBACK").font(.caption2.bold()).tracking(1.0).foregroundStyle(.orange).padding(.top, 4)
+                    if instruction.rollbackSteps.isEmpty {
+                        Text("No safe automatic rollback is declared.").font(.caption).foregroundStyle(.orange.opacity(0.85))
+                    } else {
+                        ForEach(Array(instruction.rollbackSteps.enumerated()), id: \.offset) { index, step in
+                            Text("\(index + 1). \(step)").font(.caption).foregroundStyle(.orange.opacity(0.85))
+                        }
                     }
                     if instruction.actionBoundary == "requires-confirmation" { Text("Stop before the consequential step and obtain confirmation.").font(.caption.bold()).foregroundStyle(.orange) }
                 }
@@ -316,6 +361,9 @@ struct RuntimeOperationsRoom: View {
 
     @MainActor private func refresh() async {
         do {
+            guard pairing.runtimePluginValidation.isCompatible else {
+                throw RuntimeOperationsViewError.pluginUpgradeRequired(pairing.runtimePluginValidation.message)
+            }
             let candidate = try RuntimeOperationsReader.load()
             let validation = candidate.validation(appVersion: appVersion)
             guard validation == .current else { throw RuntimeOperationsViewError.invalidProjection(validation) }
@@ -358,7 +406,11 @@ private struct RuntimeTabStyle: ButtonStyle {
 
 private enum RuntimeOperationsViewError: LocalizedError {
     case invalidProjection(RuntimeProjectionValidation)
+    case pluginUpgradeRequired(String)
     var errorDescription: String? {
-        switch self { case .invalidProjection(let validation): "Runtime operations projection rejected: \(String(describing: validation))" }
+        switch self {
+        case .invalidProjection(let validation): "Runtime operations projection rejected: \(String(describing: validation))"
+        case .pluginUpgradeRequired(let reason): reason
+        }
     }
 }

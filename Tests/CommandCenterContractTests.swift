@@ -11,12 +11,49 @@ final class CommandCenterContractTests: XCTestCase {
 
     func testRuntimeProjectionSupportsPopulatedPartialRetryingDeadLetteredAndIndeterminateState() throws {
         let projection = try decodeRuntime()
-        XCTAssertEqual(projection.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertEqual(projection.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
         XCTAssertTrue(projection.workflows.contains(where: { $0.state == "retrying" }))
         XCTAssertTrue(projection.workflows.contains(where: { $0.state == "dead-lettered" }))
         XCTAssertEqual(projection.deadLetters.first?.replayEligibility, "requires-review")
         XCTAssertEqual(projection.sources.first?.status, "partial")
         XCTAssertEqual(projection.connections.first?.coverageState, "unknown")
+    }
+
+    func testRuntimeProjectionPreservesAllEightExternalActionStatesAndGuardText() throws {
+        let states = ["confirmation-required", "confirmed", "attempting", "attempted", "verified", "failed-before-dispatch", "indeterminate", "cancelled"]
+        let projection = try decodeRuntime { object in
+            object["externalActions"] = states.enumerated().map { runtimeAction(state: $0.element, index: $0.offset) }
+            object["coverage"] = runtimeCoverage(workflows: 2, retries: 1, deadLetters: 1, actions: 8, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1, unresolved: 8)
+        }
+        XCTAssertEqual(projection.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertEqual(Set(projection.externalActions.map(\.state)), Set(states))
+        let guardTexts = states.map(RuntimeActionPresentation.safetyText)
+        XCTAssertEqual(Set(guardTexts).count, 8)
+        XCTAssertTrue(RuntimeActionPresentation.safetyText("attempted").contains("not verified"))
+        XCTAssertTrue(RuntimeActionPresentation.safetyText("indeterminate").contains("Never retry"))
+
+        let nativeNoEffect = try decodeRuntime { object in
+            object["externalActions"] = [runtimeAction(state: "failed-before-dispatch", index: 1, readbackStatus: "matched")]
+        }
+        XCTAssertEqual(nativeNoEffect.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
+    }
+
+    func testRuntimePluginPairingFailsClosedWithoutVersionedCapabilityAndSchema() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeRuntimePluginFixture(at: root)
+        XCTAssertEqual(MondayRuntimePluginInspector.validate(pluginURL: root, appVersion: "0.4.1"), .compatible(pluginVersion: "0.1.0+codex.20260924150027"))
+
+        try FileManager.default.removeItem(at: root.appendingPathComponent("skills/monday-runtime/SKILL.md"))
+        guard case .upgradeRequired = MondayRuntimePluginInspector.validate(pluginURL: root, appVersion: "0.4.1") else { return XCTFail("Missing runtime skill must fail closed") }
+        try Data("runtime".utf8).write(to: root.appendingPathComponent("skills/monday-runtime/SKILL.md"))
+
+        try writeJSON(["name": "monday", "version": "0.2.0"], to: root.appendingPathComponent(".codex-plugin/plugin.json"))
+        guard case .upgradeRequired = MondayRuntimePluginInspector.validate(pluginURL: root, appVersion: "0.4.1") else { return XCTFail("Unsupported plugin version must fail closed") }
+        try writeJSON(["name": "monday", "version": "0.1.0+codex.20260924150027"], to: root.appendingPathComponent(".codex-plugin/plugin.json"))
+
+        try writeJSON(runtimeCompatibilityMatrix(projectionVersion: 1), to: root.appendingPathComponent("skills/monday-runtime/references/compatibility-matrix.json"))
+        guard case .upgradeRequired = MondayRuntimePluginInspector.validate(pluginURL: root, appVersion: "0.4.1") else { return XCTFail("Old runtime schema must fail closed") }
     }
 
     func testRuntimeProjectionSupportsEmptyAndRecoveredStates() throws {
@@ -26,7 +63,7 @@ final class CommandCenterContractTests: XCTestCase {
             }
             object["coverage"] = runtimeCoverage()
         }
-        XCTAssertEqual(empty.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertEqual(empty.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
 
         let recovered = try decodeRuntime { object in
             var workflow = (object["workflows"] as! [[String: Any]])[0]
@@ -38,13 +75,55 @@ final class CommandCenterContractTests: XCTestCase {
             object["deadLetters"] = []
             var alert = (object["alerts"] as! [[String: Any]])[0]
             alert["state"] = "resolved"
+            alert["status"] = "resolved"
             alert["resolvedAt"] = "2026-09-23T11:45:00-04:00"
             object["alerts"] = [alert]
             object["coverage"] = runtimeCoverage(workflows: 1, actions: 1, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1)
         }
-        XCTAssertEqual(recovered.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertEqual(recovered.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
         XCTAssertEqual(recovered.workflows.first?.state, "succeeded")
         XCTAssertEqual(recovered.alerts.first?.state, "resolved")
+    }
+
+    func testRuntimeProjectionPreservesAlertLifecycleAndRecoveryControls() throws {
+        let open = try decodeRuntime()
+        let openAlert = try XCTUnwrap(open.alerts.first)
+        XCTAssertEqual(openAlert.status, "open")
+        XCTAssertEqual(openAlert.count, 2)
+        XCTAssertNotNil(openAlert.suppressedUntil)
+        let recovery = try XCTUnwrap(open.recoveryInstructions.first)
+        XCTAssertFalse(recovery.verificationSteps.isEmpty)
+        XCTAssertFalse(recovery.rollbackSteps.isEmpty)
+        XCTAssertFalse(recovery.evidenceIDs.isEmpty)
+
+        let acknowledged = try decodeRuntime { object in
+            var alert = (object["alerts"] as! [[String: Any]])[0]
+            alert["state"] = "acknowledged"
+            alert["status"] = "acknowledged"
+            alert["acknowledgedAt"] = "2026-09-23T11:50:00-04:00"
+            object["alerts"] = [alert]
+        }
+        XCTAssertEqual(acknowledged.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertNotNil(acknowledged.alerts.first?.acknowledgedAt)
+
+        let resolved = try decodeRuntime { object in
+            var alert = (object["alerts"] as! [[String: Any]])[0]
+            alert["state"] = "resolved"
+            alert["status"] = "resolved"
+            alert["resolvedAt"] = "2026-09-23T11:55:00-04:00"
+            alert["suppressedUntil"] = NSNull()
+            object["alerts"] = [alert]
+        }
+        XCTAssertEqual(resolved.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
+        XCTAssertNotNil(resolved.alerts.first?.resolvedAt)
+        XCTAssertNil(resolved.alerts.first?.suppressedUntil)
+
+        let invalid = try decodeRuntime { object in
+            var alert = (object["alerts"] as! [[String: Any]])[0]
+            alert["count"] = 0
+            object["alerts"] = [alert]
+        }
+        XCTAssertNotEqual(invalid.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .current)
     }
 
     func testRuntimeReadbackIsViewSpecificForEveryOperationalSurface() throws {
@@ -54,19 +133,21 @@ final class CommandCenterContractTests: XCTestCase {
             let receipt = try XCTUnwrap(projection.readback(
                 viewID: viewID,
                 consumer: "MONDAY Command Center",
-                appVersion: "0.4.0",
+                appVersion: "0.4.1",
                 displayedAt: instant("2026-09-23T12:00:00-04:00")
             ))
             XCTAssertEqual(receipt.projectionID, projection.projectionID)
             XCTAssertEqual(receipt.viewIDs, [viewID])
             XCTAssertEqual(receipt.state, "displayed")
         }
-        XCTAssertNil(projection.readback(viewID: "operations-all", consumer: "MONDAY Command Center", appVersion: "0.4.0"))
+        XCTAssertNil(projection.readback(viewID: "operations-all", consumer: "MONDAY Command Center", appVersion: "0.4.1"))
     }
 
     func testRuntimeProjectionRejectsFutureSchemaAndIncompatibleApp() throws {
-        let future = try decodeRuntime { $0["schemaVersion"] = 2 }
-        XCTAssertEqual(future.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .unsupportedSchema(2))
+        let old = try decodeRuntime { $0["schemaVersion"] = 1 }
+        XCTAssertEqual(old.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .unsupportedSchema(1))
+        let future = try decodeRuntime { $0["schemaVersion"] = 3 }
+        XCTAssertEqual(future.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .unsupportedSchema(3))
 
         let incompatible = try decodeRuntime { object in
             var compatibility = object["compatibility"] as! [String: Any]
@@ -74,20 +155,20 @@ final class CommandCenterContractTests: XCTestCase {
             compatibility["status"] = "update-required"
             object["compatibility"] = compatibility
         }
-        XCTAssertEqual(incompatible.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .incompatibleApp("0.5.0"))
-        XCTAssertNil(incompatible.readback(viewID: "operations-overview", consumer: "MONDAY Command Center", appVersion: "0.4.0"))
+        XCTAssertEqual(incompatible.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .incompatibleApp("0.5.0"))
+        XCTAssertNil(incompatible.readback(viewID: "operations-overview", consumer: "MONDAY Command Center", appVersion: "0.4.1"))
     }
 
     func testRuntimeProjectionRejectsInvalidDigestAndDuplicateIdentifiers() throws {
         let digest = try decodeRuntime { $0["contentDigest"] = String(repeating: "d", count: 64) }
-        XCTAssertEqual(digest.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .invalidContentDigest)
+        XCTAssertEqual(digest.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .invalidContentDigest)
 
         let duplicate = try decodeRuntime { object in
             let workflows = object["workflows"] as! [[String: Any]]
             object["workflows"] = workflows + [workflows[0]]
             object["coverage"] = runtimeCoverage(workflows: 3, retries: 1, deadLetters: 1, actions: 1, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1, unresolved: 5)
         }
-        XCTAssertEqual(duplicate.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .duplicateIdentifier("workflow"))
+        XCTAssertEqual(duplicate.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .duplicateIdentifier("workflow"))
     }
 
     func testRuntimeProjectionRejectsImpossibleActionAndDenominatorMismatch() throws {
@@ -100,12 +181,12 @@ final class CommandCenterContractTests: XCTestCase {
             action["verifiedAt"] = NSNull()
             object["externalActions"] = [action]
         }
-        XCTAssertEqual(impossible.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .invalidExternalAction("action-calendar-001"))
+        XCTAssertEqual(impossible.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .invalidExternalAction("action-calendar-001"))
 
         let mismatch = try decodeRuntime { object in
             object["coverage"] = runtimeCoverage(workflows: 99)
         }
-        XCTAssertEqual(mismatch.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .denominatorMismatch)
+        XCTAssertEqual(mismatch.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .denominatorMismatch)
     }
 
     func testRuntimeProjectionRejectsProhibitedMaterialAndUnknownFields() throws {
@@ -114,7 +195,7 @@ final class CommandCenterContractTests: XCTestCase {
             alert["safeSummary"] = "Inspect /Users/chris/private.txt"
             object["alerts"] = [alert]
         }
-        XCTAssertEqual(prohibited.validation(appVersion: "0.4.0", now: instant("2026-09-23T12:00:00-04:00")), .prohibitedMaterial("alert-runtime-001"))
+        XCTAssertEqual(prohibited.validation(appVersion: "0.4.1", now: instant("2026-09-23T12:00:00-04:00")), .prohibitedMaterial("alert-runtime-001"))
 
         var unknown = runtimeObject()
         unknown["rawEmailBody"] = "not permitted"
@@ -329,7 +410,7 @@ final class CommandCenterContractTests: XCTestCase {
     private func runtimeObject() -> [String: Any] {
         let digest = String(repeating: "c", count: 64)
         return [
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "projectionID": "runtime-2026-09-23-\(String(digest.prefix(12)))",
             "contentDigest": digest,
             "generatedAt": "2026-09-23T10:00:00-04:00",
@@ -362,7 +443,7 @@ final class CommandCenterContractTests: XCTestCase {
             ]],
             "externalActions": [[
                 "actionID": "action-calendar-001", "kind": "calendar-write", "targetLabel": "Primary work calendar",
-                "state": "proposed", "confirmationRequired": true, "readbackStatus": "missing", "retrySafe": false
+                "state": "confirmation-required", "confirmationRequired": true, "readbackStatus": "missing", "retrySafe": false
             ]],
             "commitments": [[
                 "commitmentID": "commitment-foundry-001", "title": "Prepare the bounded daily report", "state": "active",
@@ -385,8 +466,11 @@ final class CommandCenterContractTests: XCTestCase {
                 "diagnosticCodes": ["CONTENT_COVERAGE_UNKNOWN"]
             ]],
             "compatibility": [
-                "projectionSchemaVersion": 1, "minimumAppVersion": "0.4.0", "maximumAppVersion": "0.4.99",
-                "status": "compatible", "issueCodes": []
+                "projectionSchemaVersion": 2, "pluginVersion": "0.1.0+codex.20260924150027", "capabilityVersion": "2.0.0",
+                "databaseSchemaVersion": 2, "readbackSchemaVersion": 1,
+                "minimumAppVersion": "0.4.1", "maximumAppVersion": "0.5.0",
+                "status": "compatible", "issueCodes": [], "upgradePolicy": "registered-forward-only",
+                "downgradePolicy": "fail-closed", "rollbackPolicy": "restore-verified-backup"
             ],
             "migrations": [[
                 "migrationID": "migration-runtime-001", "fromVersion": "0.9.0", "toVersion": "1.0.0", "state": "applied",
@@ -395,12 +479,18 @@ final class CommandCenterContractTests: XCTestCase {
             "alerts": [[
                 "alertID": "alert-runtime-001", "severity": "warning", "category": "source-health", "state": "open",
                 "title": "Calendar coverage is partial", "safeSummary": "One normalized item remains unresolved.",
-                "raisedAt": "2026-09-23T11:30:00-04:00", "recoveryInstructionIDs": ["recovery-runtime-001"]
+                "raisedAt": "2026-09-23T11:30:00-04:00", "firstSeen": "2026-09-23T11:30:00-04:00",
+                "lastSeen": "2026-09-23T11:40:00-04:00", "count": 2, "status": "open",
+                "suppressedUntil": "2026-09-23T11:55:00-04:00", "sourceKind": "runtime-derived",
+                "evidenceIDs": ["evidence-runtime-001"], "recoveryInstructionIDs": ["recovery-runtime-001"]
             ]],
             "recoveryInstructions": [[
                 "instructionID": "recovery-runtime-001", "title": "Inspect the failed bounded collection",
                 "steps": ["Review the privacy-reduced source diagnostic.", "Retry the bounded collection after the source is available."],
-                "actionBoundary": "local-governed", "relatedIDs": ["workflow-planning-001", "outlook-calendar"]
+                "verificationSteps": ["Confirm a new successful bounded collection receipt."],
+                "rollbackSteps": ["Restore the last verified runtime backup if migration validation fails."],
+                "actionBoundary": "local-governed", "relatedIDs": ["workflow-planning-001", "outlook-calendar"],
+                "evidenceIDs": ["evidence-runtime-001"]
             ]],
             "coverage": runtimeCoverage(workflows: 2, retries: 1, deadLetters: 1, actions: 1, commitments: 1, decisions: 1, sources: 1, connections: 1, migrations: 1, alerts: 1, recovery: 1, unresolved: 5)
         ]
@@ -417,6 +507,44 @@ final class CommandCenterContractTests: XCTestCase {
             "sourceCount": sources, "connectionCount": connections, "migrationCount": migrations,
             "alertCount": alerts, "recoveryInstructionCount": recovery, "unresolvedCount": unresolved
         ]
+    }
+
+    private func runtimeAction(state: String, index: Int, readbackStatus override: String? = nil) -> [String: Any] {
+        var action: [String: Any] = [
+            "actionID": "action-governed-\(index)", "kind": "calendar-write", "targetLabel": "Primary work calendar",
+            "state": state, "confirmationRequired": ["confirmation-required", "failed-before-dispatch"].contains(state),
+            "readbackStatus": override ?? (state == "verified" ? "matched" : state == "indeterminate" ? "indeterminate" : "missing"),
+            "retrySafe": state == "failed-before-dispatch"
+        ]
+        if ["confirmed", "attempting", "attempted", "verified", "failed-before-dispatch", "indeterminate"].contains(state) {
+            action["confirmedAt"] = "2026-09-23T11:00:00-04:00"
+        }
+        if ["attempting", "attempted", "verified", "failed-before-dispatch", "indeterminate"].contains(state) {
+            action["attemptedAt"] = "2026-09-23T11:05:00-04:00"
+        }
+        if state == "verified" { action["verifiedAt"] = "2026-09-23T11:10:00-04:00" }
+        return action
+    }
+
+    private func writeRuntimePluginFixture(at root: URL) throws {
+        let paths = [".codex-plugin", "skills/monday-runtime/references", "skills/monday-core/references"]
+        for path in paths { try FileManager.default.createDirectory(at: root.appendingPathComponent(path), withIntermediateDirectories: true) }
+        try writeJSON(["name": "monday", "version": "0.1.0+codex.20260924150027"], to: root.appendingPathComponent(".codex-plugin/plugin.json"))
+        try Data("runtime".utf8).write(to: root.appendingPathComponent("skills/monday-runtime/SKILL.md"))
+        try writeJSON(["schemaVersion": 1, "capabilities": [["id": "monday-runtime"]]], to: root.appendingPathComponent("skills/monday-core/references/capability-registry.json"))
+        try writeJSON(runtimeCompatibilityMatrix(projectionVersion: 2), to: root.appendingPathComponent("skills/monday-runtime/references/compatibility-matrix.json"))
+    }
+
+    private func runtimeCompatibilityMatrix(projectionVersion: Int) -> [String: Any] {
+        [
+            "schemaVersion": 2, "capabilityVersion": "2.0.0", "runtimeDatabaseVersion": 2,
+            "operationsProjectionVersion": projectionVersion, "operationsReadbackVersion": 1,
+            "supportedAppVersions": ["minimumInclusive": "0.4.1", "maximumExclusive": "0.5.0"]
+        ]
+    }
+
+    private func writeJSON(_ object: Any, to url: URL) throws {
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
     }
 
     private func instant(_ value: String) -> Date {
