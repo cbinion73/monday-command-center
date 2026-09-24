@@ -2,6 +2,12 @@ import XCTest
 @testable import Command_Center
 
 final class CommandCenterContractTests: XCTestCase {
+    func testCommandCenterRoomLaunchRouting() {
+        XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center"]), .today)
+        XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "digitalTwin"]), .digitalTwin)
+        XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "unknown"]), .today)
+    }
+
     func testSchemaThreePlanRequiresIdentifier() throws {
         let plan = try decode(planID: nil, validUntil: "2026-09-24T00:00:00-04:00")
         XCTAssertEqual(

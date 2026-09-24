@@ -13,9 +13,16 @@ struct MondayCommandCenterApp: App {
     }
 }
 
-private enum CommandCenterRoom: String, CaseIterable, Identifiable {
+enum CommandCenterRoom: String, CaseIterable, Identifiable {
     case today, projects, personalProjects, digitalTwin, continuity, activity, operations, journal, researchJournal, planner
     var id: String { rawValue }
+
+    static func initial(arguments: [String] = ProcessInfo.processInfo.arguments) -> CommandCenterRoom {
+        guard let flag = arguments.firstIndex(of: "--command-center-room"),
+              arguments.indices.contains(flag + 1),
+              let room = CommandCenterRoom(rawValue: arguments[flag + 1]) else { return .today }
+        return room
+    }
     var title: String {
         switch self {
         case .today: "Today"
@@ -47,7 +54,7 @@ private enum CommandCenterRoom: String, CaseIterable, Identifiable {
 }
 
 private struct MondayCommandCenterShell: View {
-    @State private var room: CommandCenterRoom = .today
+    @State private var room: CommandCenterRoom = .initial()
     @StateObject private var pairing = CommandCenterPairing.shared
     @State private var showingPairing = false
 
