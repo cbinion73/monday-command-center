@@ -1,5 +1,15 @@
 import Foundation
 
+enum GovernedPath {
+    static func containedFile(_ candidate: URL, within root: URL) -> URL? {
+        let governedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL
+        guard resolved.path == governedRoot.path || resolved.path.hasPrefix(governedRoot.path + "/") else { return nil }
+        guard (try? resolved.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
+        return resolved
+    }
+}
+
 enum PlannerDayRollover {
     static func selection(
         current: Date,

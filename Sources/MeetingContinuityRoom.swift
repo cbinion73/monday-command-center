@@ -192,8 +192,9 @@ struct MeetingContinuityRoom: View {
     }
 
     private func note(for item: ContinuitySummary.BacklogItem) -> MeetingNote? {
-        guard let path = item.note_path else { return nil }
-        let url = URL(fileURLWithPath: path)
+        guard let path = item.note_path,
+              let root = CommandCenterPairing.shared.meetingNotesURL?.resolvingSymlinksInPath().standardizedFileURL else { return nil }
+        guard let url = GovernedPath.containedFile(URL(fileURLWithPath: path), within: root) else { return nil }
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         return MeetingNote(id: item.meeting_key, date: item.date, title: item.title, url: url, contents: contents)
     }

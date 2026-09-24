@@ -14,13 +14,14 @@ struct MondayCommandCenterApp: App {
 }
 
 private enum CommandCenterRoom: String, CaseIterable, Identifiable {
-    case today, projects, personalProjects, continuity, activity, operations, journal, researchJournal, planner
+    case today, projects, personalProjects, digitalTwin, continuity, activity, operations, journal, researchJournal, planner
     var id: String { rawValue }
     var title: String {
         switch self {
         case .today: "Today"
         case .projects: "Projects"
         case .personalProjects: "Personal Projects"
+        case .digitalTwin: "Digital Twin"
         case .continuity: "Meeting Continuity"
         case .activity: "Activity Ledger"
         case .operations: "MONDAY Operations"
@@ -34,6 +35,7 @@ private enum CommandCenterRoom: String, CaseIterable, Identifiable {
         case .today: "rectangle.grid.2x2.fill"
         case .projects: "point.3.connected.trianglepath.dotted"
         case .personalProjects: "person.crop.circle.badge.checkmark"
+        case .digitalTwin: "person.text.rectangle.fill"
         case .continuity: "checklist.checked"
         case .activity: "list.bullet.rectangle.portrait.fill"
         case .operations: "waveform.path.ecg.rectangle.fill"
@@ -79,6 +81,7 @@ private struct MondayCommandCenterShell: View {
         case .today: CommandCenterDashboard(room: $room)
         case .projects: CommandCenterView()
         case .personalProjects: PersonalProjectsRoom()
+        case .digitalTwin: TwinInspectionRoom()
         case .continuity: MeetingContinuityRoom()
         case .activity: GovernedRecordLibraryRoom(title: "Activity Ledger", subtitle: "Observable MONDAY and Codex activity receipts. This is not a complete account of your day.", rootURL: pairing.activityLedgerURL, emptyMessage: "Choose the Activity Ledger folder in Settings.")
         case .operations: GovernedRecordLibraryRoom(title: "MONDAY Operations", subtitle: "Pipeline receipts, source health, open loops, and inspectable operational records.", rootURL: pairing.operationsURL, emptyMessage: "Choose the MONDAY Operations folder in Settings.")

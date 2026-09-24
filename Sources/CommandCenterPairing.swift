@@ -58,7 +58,8 @@ final class CommandCenterPairing: ObservableObject {
 
     var personalProjectsDirectoryURL: URL? {
         guard let personalProjectVaultURL else { return nil }
-        return FileManager.default.fileExists(atPath: personalProjectVaultURL.path) ? personalProjectVaultURL : nil
+        let projects = personalProjectVaultURL.appendingPathComponent("03 Projects", isDirectory: true)
+        return FileManager.default.fileExists(atPath: projects.path) ? projects : nil
     }
 
     /// Derived only from governed project records. Command Center never writes it.
@@ -84,7 +85,7 @@ final class CommandCenterPairing: ObservableObject {
     func pair(pluginURL: URL, projectVaultURL: URL, personalProjectVaultURL: URL?, captainsLogURL: URL?, researchJournalURL: URL?, activityLedgerURL: URL?, operationsURL: URL?, plannerFeedURL: URL?, continuityFeedURL: URL?, meetingNotesURL: URL?, weatherAddress: String) throws {
         guard Self.isMondayPlugin(pluginURL) else { throw PairingError.invalidPlugin }
         guard FileManager.default.fileExists(atPath: projectVaultURL.appendingPathComponent("03 Projects", isDirectory: true).path) else { throw PairingError.invalidProjectVault }
-        if let personalProjectVaultURL, !FileManager.default.fileExists(atPath: personalProjectVaultURL.path) { throw PairingError.invalidPersonalProjectVault }
+        if let personalProjectVaultURL, !FileManager.default.fileExists(atPath: personalProjectVaultURL.appendingPathComponent("03 Projects", isDirectory: true).path) { throw PairingError.invalidPersonalProjectVault }
         if let captainsLogURL, !FileManager.default.fileExists(atPath: captainsLogURL.path) { throw PairingError.invalidCaptainsLog }
         if let researchJournalURL, !FileManager.default.fileExists(atPath: researchJournalURL.path) { throw PairingError.invalidResearchJournal }
         if let activityLedgerURL, !FileManager.default.fileExists(atPath: activityLedgerURL.path) { throw PairingError.invalidActivityLedger }
@@ -123,7 +124,7 @@ final class CommandCenterPairing: ObservableObject {
             self.projectVaultURL = canonicalVault
         }
         if let captainsLogURL, !FileManager.default.fileExists(atPath: captainsLogURL.path) { self.captainsLogURL = nil }
-        if let personalProjectVaultURL, !FileManager.default.fileExists(atPath: personalProjectVaultURL.path) { self.personalProjectVaultURL = nil }
+        if let personalProjectVaultURL, !FileManager.default.fileExists(atPath: personalProjectVaultURL.appendingPathComponent("03 Projects", isDirectory: true).path) { self.personalProjectVaultURL = nil }
         if let researchJournalURL, !FileManager.default.fileExists(atPath: researchJournalURL.path) { self.researchJournalURL = nil }
         if let activityLedgerURL, !FileManager.default.fileExists(atPath: activityLedgerURL.path) { self.activityLedgerURL = nil }
         if let operationsURL, !FileManager.default.fileExists(atPath: operationsURL.path) { self.operationsURL = nil }

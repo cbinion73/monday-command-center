@@ -51,7 +51,7 @@ struct GovernedRecordLibraryRoom: View {
                             Text(selected.title)
                                 .font(.system(size: 27, weight: .semibold, design: .serif))
                                 .foregroundStyle(.white)
-                            Text(selected.url.path)
+                            Text(selected.relativePath)
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.45))
                                 .textSelection(.enabled)
@@ -84,7 +84,8 @@ struct GovernedRecordLibraryRoom: View {
             message = emptyMessage
             return
         }
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey]
+        let governedRoot = rootURL.resolvingSymlinksInPath().standardizedFileURL
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
         guard let enumerator = FileManager.default.enumerator(
             at: rootURL,
             includingPropertiesForKeys: keys,
@@ -98,15 +99,18 @@ struct GovernedRecordLibraryRoom: View {
         let allowed = Set(["md", "json", "jsonl", "txt"])
         var loaded: [GovernedRecord] = []
         for case let url as URL in enumerator {
-            guard allowed.contains(url.pathExtension.lowercased()),
-                  let values = try? url.resourceValues(forKeys: Set(keys)),
+            guard let resolved = GovernedPath.containedFile(url, within: governedRoot),
+                  allowed.contains(resolved.pathExtension.lowercased()),
+                  let values = try? resolved.resourceValues(forKeys: Set(keys)),
                   values.isRegularFile == true,
-                  let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                  (values.fileSize ?? 0) <= 524_288,
+                  let contents = try? String(contentsOf: resolved, encoding: .utf8) else { continue }
             loaded.append(GovernedRecord(
-                url: url,
-                title: url.deletingPathExtension().lastPathComponent,
+                url: resolved,
+                relativePath: String(resolved.path.dropFirst(governedRoot.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+                title: resolved.deletingPathExtension().lastPathComponent,
                 modified: values.contentModificationDate ?? .distantPast,
-                contents: contents
+                contents: Self.privacyReduced(contents)
             ))
         }
         records = loaded.sorted { lhs, rhs in
@@ -119,11 +123,26 @@ struct GovernedRecordLibraryRoom: View {
         }
         message = records.isEmpty ? emptyMessage : ""
     }
+
+    private static func privacyReduced(_ value: String) -> String {
+        var result = value
+        let replacements: [(String, String)] = [
+            (#"(?i)\b(?:api[_-]?key|password|passwd|secret|token)\s*[:=]\s*[^\s,;]+"#, "[REDACTED CREDENTIAL]"),
+            (#"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"#, "[REDACTED CREDENTIAL]"),
+            (#"(?i)\b(?:https?|file)://\S+"#, "[REDACTED LINK]"),
+            (#"(?<![A-Za-z0-9])/(?:Users|Volumes|private|var|tmp|home|etc)/[^\s\]\[)}`'\"]+"#, "[REDACTED PATH]")
+        ]
+        for (pattern, replacement) in replacements {
+            result = result.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        return result
+    }
 }
 
 private struct GovernedRecord: Identifiable, Hashable {
     var id: String { url.path }
     let url: URL
+    let relativePath: String
     let title: String
     let modified: Date
     let contents: String
