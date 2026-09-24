@@ -19,6 +19,22 @@ enum MondayRuntimePluginValidation: Equatable {
     }
 }
 
+enum MondayEvaluationPluginValidation: Equatable {
+    case compatible(pluginVersion: String)
+    case upgradeRequired(reason: String)
+
+    var isCompatible: Bool {
+        if case .compatible = self { return true }
+        return false
+    }
+    var message: String {
+        switch self {
+        case .compatible(let version): "MONDAY \(version) provides the governed evaluation capability."
+        case .upgradeRequired(let reason): "Evaluation Upgrade Required: \(reason) Existing Planner, Twin, and Runtime rooms remain available."
+        }
+    }
+}
+
 struct MondayPluginVersion: Comparable {
     let parts: [Int]
     init?(_ value: String) {
@@ -81,6 +97,35 @@ enum MondayRuntimePluginInspector {
     }
 }
 
+enum MondayEvaluationPluginInspector {
+    static func validate(pluginURL: URL, appVersion: String) -> MondayEvaluationPluginValidation {
+        guard let manifest = jsonObject(at: pluginURL.appendingPathComponent(".codex-plugin/plugin.json")),
+              manifest["name"] as? String == "monday", let version = manifest["version"] as? String,
+              let plugin = MondayPluginVersion(version), let minimum = MondayPluginVersion("0.1.0"), let maximum = MondayPluginVersion("0.2.0"),
+              plugin >= minimum, plugin < maximum,
+              let app = MondayPluginVersion(appVersion), let minimumApp = MondayPluginVersion("0.4.2"), let maximumApp = MondayPluginVersion("0.5.0"),
+              app >= minimumApp, app < maximumApp else {
+            return .upgradeRequired(reason: "The selected primary plugin or app version is outside the supported 0.1.x / 0.4.2-to-0.5.0 range.")
+        }
+        guard FileManager.default.fileExists(atPath: pluginURL.appendingPathComponent("skills/monday-evaluation/SKILL.md").path) else {
+            return .upgradeRequired(reason: "The primary plugin does not contain monday-evaluation.")
+        }
+        guard let registry = jsonObject(at: pluginURL.appendingPathComponent("skills/monday-core/references/capability-registry.json")),
+              registry["schemaVersion"] as? Int == 1,
+              let capabilities = registry["capabilities"] as? [[String: Any]],
+              capabilities.contains(where: { $0["id"] as? String == "monday-evaluation" }) else {
+            return .upgradeRequired(reason: "The primary capability registry does not route monday-evaluation.")
+        }
+        return .compatible(pluginVersion: version)
+    }
+
+    private static func jsonObject(at url: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object
+    }
+}
+
 /// User-approved local locations. Command Center reads them but never stores
 /// Codex, calendar, or vault credentials.
 @MainActor
@@ -131,8 +176,13 @@ final class CommandCenterPairing: ObservableObject {
     var isPaired: Bool { pluginURL != nil && projectsDirectoryURL != nil }
     var runtimePluginValidation: MondayRuntimePluginValidation {
         guard let pluginURL else { return .upgradeRequired(reason: "No primary MONDAY plugin is paired.") }
-        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.1"
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.2"
         return MondayRuntimePluginInspector.validate(pluginURL: pluginURL, appVersion: appVersion)
+    }
+    var evaluationPluginValidation: MondayEvaluationPluginValidation {
+        guard let pluginURL else { return .upgradeRequired(reason: "No primary MONDAY plugin is paired.") }
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.2"
+        return MondayEvaluationPluginInspector.validate(pluginURL: pluginURL, appVersion: appVersion)
     }
     var projectsDirectoryURL: URL? {
         guard let projectVaultURL else { return nil }
@@ -351,6 +401,11 @@ struct CommandCenterPairingView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(validation.isCompatible ? Color.green : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
+                let evaluation = MondayEvaluationPluginInspector.validate(pluginURL: pluginURL, appVersion: appVersion)
+                Label(evaluation.message, systemImage: evaluation.isCompatible ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(evaluation.isCompatible ? Color.green : Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             PairingPathRow(title: "Project Knowledge vault", detail: "Required. Select the vault containing 03 Projects.", url: projectVaultURL) { projectVaultURL = chooseDirectory(prompt: "Select your Project Knowledge vault") }
             PairingPathRow(title: "Personal Project Knowledge", detail: "Optional and private. Default: Knowledge Vault/Personal Project Knowledge.", url: personalProjectVaultURL) { personalProjectVaultURL = chooseDirectory(prompt: "Select your Personal Project Knowledge vault") }
@@ -400,7 +455,7 @@ struct CommandCenterPairingView: View {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.1" }
+    private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.2" }
 }
 
 private struct PairingPathRow: View {

@@ -14,7 +14,7 @@ struct MondayCommandCenterApp: App {
 }
 
 enum CommandCenterRoom: String, CaseIterable, Identifiable {
-    case today, projects, personalProjects, digitalTwin, runtimeOperations, continuity, activity, operations, journal, researchJournal, planner
+    case today, projects, personalProjects, digitalTwin, runtimeOperations, evaluation, continuity, activity, operations, journal, researchJournal, planner
     var id: String { rawValue }
 
     static func initial(arguments: [String] = ProcessInfo.processInfo.arguments) -> CommandCenterRoom {
@@ -30,6 +30,7 @@ enum CommandCenterRoom: String, CaseIterable, Identifiable {
         case .personalProjects: "Personal Projects"
         case .digitalTwin: "Digital Twin"
         case .runtimeOperations: "Runtime Operations"
+        case .evaluation: "Evaluation & Pilot"
         case .continuity: "Meeting Continuity"
         case .activity: "Activity Ledger"
         case .operations: "MONDAY Operations"
@@ -45,6 +46,7 @@ enum CommandCenterRoom: String, CaseIterable, Identifiable {
         case .personalProjects: "person.crop.circle.badge.checkmark"
         case .digitalTwin: "person.text.rectangle.fill"
         case .runtimeOperations: "gearshape.2.fill"
+        case .evaluation: "checkmark.seal.text.page.fill"
         case .continuity: "checklist.checked"
         case .activity: "list.bullet.rectangle.portrait.fill"
         case .operations: "waveform.path.ecg.rectangle.fill"
@@ -92,6 +94,7 @@ private struct MondayCommandCenterShell: View {
         case .personalProjects: PersonalProjectsRoom()
         case .digitalTwin: TwinInspectionRoom()
         case .runtimeOperations: RuntimeOperationsRoom()
+        case .evaluation: EvaluationRoom()
         case .continuity: MeetingContinuityRoom()
         case .activity: GovernedRecordLibraryRoom(title: "Activity Ledger", subtitle: "Observable MONDAY and Codex activity receipts. This is not a complete account of your day.", rootURL: pairing.activityLedgerURL, emptyMessage: "Choose the Activity Ledger folder in Settings.")
         case .operations: GovernedRecordLibraryRoom(title: "MONDAY Operations", subtitle: "Pipeline receipts, source health, open loops, and inspectable operational records.", rootURL: pairing.operationsURL, emptyMessage: "Choose the MONDAY Operations folder in Settings.")

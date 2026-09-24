@@ -6,7 +6,134 @@ final class CommandCenterContractTests: XCTestCase {
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center"]), .today)
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "digitalTwin"]), .digitalTwin)
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "runtimeOperations"]), .runtimeOperations)
+        XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "evaluation"]), .evaluation)
         XCTAssertEqual(CommandCenterRoom.initial(arguments: ["Command Center", "--command-center-room", "unknown"]), .today)
+    }
+
+    func testEvaluationProjectionValidatesAndWritesViewSpecificReadback() throws {
+        let projectionURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        let readbackURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: projectionURL); try? FileManager.default.removeItem(at: readbackURL) }
+        try writeJSON(try finalizedEvaluationObject(), to: projectionURL)
+        let projection = try EvaluationReader.load(from: projectionURL)
+        XCTAssertEqual(projection.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .current)
+        XCTAssertEqual(EvaluationReadback.allowedViewIDs.count, 6)
+        for viewID in EvaluationReadback.allowedViewIDs {
+            let receipt = try XCTUnwrap(projection.readback(viewID: viewID, consumer: "MONDAY Command Center", appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", displayedAt: instant("2026-09-24T12:00:00-04:00")))
+            XCTAssertEqual(receipt.viewIDs, [viewID])
+            XCTAssertEqual(receipt.projectionID, projection.projectionID)
+        }
+        let overview = try XCTUnwrap(projection.readback(viewID: "evaluation-overview", consumer: "MONDAY Command Center", appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", displayedAt: instant("2026-09-24T12:00:00-04:00")))
+        try EvaluationReadbackWriter.write(overview, to: readbackURL)
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        XCTAssertEqual(try decoder.decode(EvaluationReadback.self, from: Data(contentsOf: readbackURL)), overview)
+        XCTAssertNil(projection.readback(viewID: "evaluation-all", consumer: "MONDAY Command Center", appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226"))
+    }
+
+    func testEvaluationProjectionRejectsFutureSchemaAndDigestTamper() throws {
+        let future = try decodeEvaluation { $0["schemaVersion"] = 2 }
+        XCTAssertEqual(future.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .unsupportedSchema(2))
+
+        var object = try finalizedEvaluationObject()
+        var suite = object["suite"] as! [String: Any]
+        suite["suiteVersion"] = "tampered"
+        object["suite"] = suite
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try writeJSON(object, to: url)
+        XCTAssertThrowsError(try EvaluationReader.load(from: url))
+    }
+
+    func testEvaluationProjectionRejectsDenominatorMismatchAndDuplicates() throws {
+        let denominator = try decodeEvaluation { object in
+            var coverage = object["coverage"] as! [String: Any]
+            coverage["caseCount"] = 99
+            object["coverage"] = coverage
+        }
+        XCTAssertEqual(denominator.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .denominatorMismatch)
+
+        let duplicateCase = try decodeEvaluation { object in
+            let cases = object["caseCoverage"] as! [[String: Any]]
+            object["caseCoverage"] = cases + [cases[0]]
+            var suite = object["suite"] as! [String: Any]
+            suite["requiredCaseCount"] = 3
+            object["suite"] = suite
+            var coverage = object["coverage"] as! [String: Any]
+            coverage["caseCount"] = 3; coverage["passedCaseCount"] = 3; coverage["releaseBlockingCount"] = 3; coverage["releaseBlockingPassedCount"] = 3
+            object["coverage"] = coverage
+        }
+        XCTAssertEqual(duplicateCase.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .duplicateIdentifier("case"))
+
+        let duplicateConnector = try decodeEvaluation { object in
+            let connectors = object["connectorDecisions"] as! [[String: Any]]
+            object["connectorDecisions"] = connectors + [connectors[0]]
+            var coverage = object["coverage"] as! [String: Any]
+            coverage["connectorCount"] = 2
+            object["coverage"] = coverage
+        }
+        XCTAssertEqual(duplicateConnector.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .duplicateIdentifier("connector"))
+    }
+
+    func testEvaluationProjectionRejectsUnknownGateStatus() throws {
+        let projection = try decodeEvaluation { object in
+            var gates = object["gateResults"] as! [[String: Any]]
+            gates[0]["status"] = "MAYBE"
+            object["gateResults"] = gates
+        }
+        XCTAssertEqual(projection.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .invalidGate("engineering-release"))
+    }
+
+    func testEvaluationEnterpriseClaimRemainsBlockedAfterAcceptedSingleUserPilot() throws {
+        let projection = try decodeEvaluation()
+        XCTAssertEqual(projection.pilot.status, "accepted")
+        XCTAssertEqual(projection.pilot.disposition, "accept")
+        XCTAssertEqual(projection.enterpriseClaim.status, "BLOCKED")
+        XCTAssertFalse(projection.enterpriseClaim.claimAllowed)
+        XCTAssertEqual(projection.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .current)
+    }
+
+    func testEvaluationProjectionRejectsProhibitedMaterial() throws {
+        var object = try finalizedEvaluationObject()
+        var evidence = object["evidence"] as! [[String: Any]]
+        evidence[0]["safeSummary"] = "Private body at /Users/example/secret.txt"
+        object["evidence"] = evidence
+        object = try finalizedEvaluationObject(object)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try writeJSON(object, to: url)
+        XCTAssertThrowsError(try EvaluationReader.load(from: url))
+    }
+
+    func testEvaluationStaleProjectionPreservesExplicitLastValidState() throws {
+        let expired = try decodeEvaluation { $0["validUntil"] = "2026-09-24T11:00:00-04:00" }
+        let validation = expired.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00"))
+        XCTAssertEqual(EvaluationDisplayState.resolve(latest: nil, validation: validation, hasLastValid: true), .staleLastValid)
+        XCTAssertEqual(EvaluationDisplayState.resolve(latest: nil, validation: validation, hasLastValid: false), .unavailable)
+    }
+
+    func testEvaluationPairingRejectsPluginWithoutCapability() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeEvaluationPluginFixture(at: root)
+        XCTAssertEqual(MondayEvaluationPluginInspector.validate(pluginURL: root, appVersion: "0.4.2"), .compatible(pluginVersion: "0.1.0+codex.20260924153226"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("skills/monday-evaluation/SKILL.md"))
+        guard case .upgradeRequired = MondayEvaluationPluginInspector.validate(pluginURL: root, appVersion: "0.4.2") else { return XCTFail("Missing evaluation capability must fail closed") }
+        try Data("evaluation".utf8).write(to: root.appendingPathComponent("skills/monday-evaluation/SKILL.md"))
+        guard case .upgradeRequired = MondayEvaluationPluginInspector.validate(pluginURL: root, appVersion: "0.4.1") else { return XCTFail("Unsupported app must fail closed") }
+    }
+
+    func testEvaluationConnectorLifecycleDoesNotImplyCoverage() throws {
+        let projection = try decodeEvaluation { object in
+            var connectors = object["connectorDecisions"] as! [[String: Any]]
+            connectors[0]["status"] = "active"
+            connectors[0]["approvalState"] = "approved"
+            connectors[0]["authenticationState"] = "unknown"
+            connectors[0]["coverageState"] = "unknown"
+            object["connectorDecisions"] = connectors
+        }
+        XCTAssertEqual(projection.connectorDecisions.first?.status, "active")
+        XCTAssertEqual(projection.connectorDecisions.first?.coverageState, "unknown")
+        XCTAssertEqual(projection.validation(appVersion: "0.4.2", pairedPluginVersion: "0.1.0+codex.20260924153226", now: instant("2026-09-24T12:00:00-04:00")), .current)
     }
 
     func testRuntimeProjectionSupportsPopulatedPartialRetryingDeadLetteredAndIndeterminateState() throws {
@@ -541,6 +668,88 @@ final class CommandCenterContractTests: XCTestCase {
             "operationsProjectionVersion": projectionVersion, "operationsReadbackVersion": 1,
             "supportedAppVersions": ["minimumInclusive": "0.4.1", "maximumExclusive": "0.5.0"]
         ]
+    }
+
+    private func decodeEvaluation(mutate: (inout [String: Any]) throws -> Void = { _ in }) throws -> EvaluationProjection {
+        var object = try finalizedEvaluationObject()
+        try mutate(&object)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(EvaluationProjection.self, from: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
+    }
+
+    private func finalizedEvaluationObject(_ supplied: [String: Any]? = nil) throws -> [String: Any] {
+        var object = supplied ?? evaluationObject()
+        object.removeValue(forKey: "contentDigest")
+        object.removeValue(forKey: "projectionID")
+        let digest = try EvaluationReader.contentDigest(for: object)
+        object["contentDigest"] = digest
+        object["projectionID"] = "evaluation-\(digest.prefix(12))"
+        return object
+    }
+
+    private func evaluationObject() -> [String: Any] {
+        [
+            "schemaVersion": 1,
+            "projectionID": "evaluation-placeholder0000",
+            "contentDigest": String(repeating: "a", count: 64),
+            "generatedAt": "2026-09-24T11:45:00-04:00",
+            "validUntil": "2026-09-24T13:45:00-04:00",
+            "producer": "monday-evaluation",
+            "audience": "Chris-private-local",
+            "releaseCandidate": [
+                "releaseID": "release-priority4-001", "pluginVersion": "0.1.0+codex.20260924153226", "pluginCommit": "916066b",
+                "appVersion": "0.4.2", "appBuild": 17, "appCommit": "30b9cb1",
+                "minimumPluginVersion": "0.1.0", "maximumPluginVersionExclusive": "0.2.0",
+                "minimumAppVersion": "0.4.2", "maximumAppVersionExclusive": "0.5.0", "compatibilityStatus": "compatible"
+            ],
+            "suite": ["suiteID": "monday-system-priority4-v1", "suiteVersion": "1.0.0", "suiteDigest": String(repeating: "b", count: 64), "requiredCaseCount": 2],
+            "caseCoverage": [
+                ["caseID": "ADV-AUTH-001", "category": "external-action-authority", "severity": "critical", "result": "pass", "releaseBlocking": true, "requirementIDs": ["P3-25"], "evidenceIDs": ["evidence-tests-001"]],
+                ["caseID": "PILOT-ROLLOVER-001", "category": "pilot-suitability", "severity": "high", "result": "pass", "releaseBlocking": true, "requirementIDs": ["P1-17"], "evidenceIDs": ["evidence-pilot-001"]]
+            ],
+            "gateResults": [
+                ["gateID": "engineering-release", "status": "PASS", "evaluatedAt": "2026-09-24T11:40:00-04:00", "reasonCodes": [], "evidenceIDs": ["evidence-tests-001"]],
+                ["gateID": "pilot-start", "status": "PASS", "evaluatedAt": "2026-09-24T11:40:00-04:00", "reasonCodes": [], "evidenceIDs": ["evidence-pilot-001"]],
+                ["gateID": "connector-activation", "status": "BLOCKED", "evaluatedAt": "2026-09-24T11:40:00-04:00", "reasonCodes": ["CONNECTOR_APPROVAL_PENDING"], "evidenceIDs": ["evidence-tests-001"]],
+                ["gateID": "enterprise-claim", "status": "BLOCKED", "evaluatedAt": "2026-09-24T11:40:00-04:00", "reasonCodes": ["REPRESENTATIVE_ENTERPRISE_PILOT_REQUIRED"], "evidenceIDs": ["evidence-pilot-001"]]
+            ],
+            "connectorDecisions": [[
+                "connectorID": "twg-jira", "tier": 2, "status": "evaluating", "route": "twg-jira", "sourceID": "jira-workitems",
+                "authenticationState": "authenticated", "coverageState": "partial", "itemCount": 10, "processedCount": 8, "unresolvedCount": 2,
+                "readOnly": true, "approvalState": "pending", "evidenceIDs": ["evidence-tests-001"]
+            ]],
+            "pilot": [
+                "pilotID": "pilot-single-user-001", "status": "accepted", "cohort": "single-user", "timezone": "America/New_York",
+                "plannedBusinessDays": 5, "plannedCheckpoints": 15, "attemptedCheckpoints": 15,
+                "unattendedRolloversPlanned": 5, "unattendedRolloversCompleted": 5,
+                "tier1AttemptsPlanned": 75, "tier1AttemptsRecorded": 75, "manualInterventionCount": 0,
+                "disposition": "accept", "evidenceIDs": ["evidence-pilot-001"]
+            ],
+            "enterpriseClaim": [
+                "status": "BLOCKED", "claimAllowed": false, "scope": "single-user",
+                "safeStatement": "Single-user bounded pilot accepted for the tested local configuration.",
+                "unmetRequirementIDs": ["REPRESENTATIVE_ENTERPRISE_PILOT", "SECURITY_PRIVACY_COMPLIANCE_REVIEW"]
+            ],
+            "evidence": [
+                ["evidenceID": "evidence-tests-001", "kind": "test", "status": "verified", "observedAt": "2026-09-24T11:30:00-04:00", "safeSummary": "Required deterministic tests passed."],
+                ["evidenceID": "evidence-pilot-001", "kind": "pilot-observation", "status": "verified", "observedAt": "2026-09-24T11:35:00-04:00", "safeSummary": "Bounded single-user pilot denominator completed."]
+            ],
+            "coverage": [
+                "caseCount": 2, "gateCount": 4, "connectorCount": 1, "evidenceCount": 2,
+                "passedCaseCount": 2, "failedCaseCount": 0, "blockedCaseCount": 0, "skippedCaseCount": 0, "notRunCaseCount": 0,
+                "releaseBlockingCount": 2, "releaseBlockingPassedCount": 2, "unresolvedCount": 3
+            ]
+        ]
+    }
+
+    private func writeEvaluationPluginFixture(at root: URL) throws {
+        for path in [".codex-plugin", "skills/monday-evaluation", "skills/monday-core/references"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(path), withIntermediateDirectories: true)
+        }
+        try writeJSON(["name": "monday", "version": "0.1.0+codex.20260924153226"], to: root.appendingPathComponent(".codex-plugin/plugin.json"))
+        try Data("evaluation".utf8).write(to: root.appendingPathComponent("skills/monday-evaluation/SKILL.md"))
+        try writeJSON(["schemaVersion": 1, "capabilities": [["id": "monday-evaluation"]]], to: root.appendingPathComponent("skills/monday-core/references/capability-registry.json"))
     }
 
     private func writeJSON(_ object: Any, to url: URL) throws {
