@@ -82,6 +82,16 @@ final class CommandCenterContractTests: XCTestCase {
         XCTAssertEqual(projection.validation(now: instant("2026-09-23T12:00:00-04:00")), .prohibitedMaterial("work-style"))
     }
 
+    func testTwinProjectionRejectsSensitiveGovernanceReason() throws {
+        let projection = try decodeTwin(governanceReason: "Private note at user@example.com")
+        XCTAssertEqual(projection.validation(now: instant("2026-09-23T12:00:00-04:00")), .prohibitedMaterial("event-123"))
+    }
+
+    func testTwinProjectionRejectsSensitivePlaybookMetadata() throws {
+        let projection = try decodeTwin(playbookAudience: "/Users/chris/private.txt")
+        XCTAssertEqual(projection.validation(now: instant("2026-09-23T12:00:00-04:00")), .prohibitedMaterial("playbook-123"))
+    }
+
     func testGovernedPathRejectsTraversalAndSymlinkEscape() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -129,7 +139,9 @@ final class CommandCenterContractTests: XCTestCase {
         validUntil: String = "2026-09-24T10:00:00-04:00",
         professionalCount: Int = 1,
         personalStatement: Bool = false,
-        professionalStatement: String = "Chris prefers concise evidence-backed briefs."
+        professionalStatement: String = "Chris prefers concise evidence-backed briefs.",
+        governanceReason: String = "Preference corrected.",
+        playbookAudience: String = "Approved collaborator"
     ) throws -> TwinInspectionProjection {
         let privateStatement = personalStatement ? #", "statement": "Private material""# : ""
         let json = """
@@ -149,10 +161,10 @@ final class CommandCenterContractTests: XCTestCase {
             {"recordID":"work-style","domain":"professional","recordType":"working-preference","statement":"\(professionalStatement)","status":"active","version":1,"evidenceClass":"validated","confidence":0.9,"sensitivity":"shareable","purpose":"Planning","updatedAt":"2026-09-23T10:00:00-04:00","reviewAt":"2026-12-23T10:00:00-05:00","sourceIDs":["project-knowledge"],"evidenceCount":1,"contradictionCount":0,"supersedes":null},
             {"recordID":"private-pref","domain":"personal","recordType":"preference"\(privateStatement),"status":"active","version":1,"evidenceClass":"reported","confidence":0.8,"sensitivity":"private","purpose":"Private planning","updatedAt":"2026-09-23T10:00:00-04:00","reviewAt":"2026-12-23T10:00:00-05:00","sourceIDs":["user-supplied"],"evidenceCount":1,"contradictionCount":0,"supersedes":null}
           ],
-          "governanceEvents": [],
+          "governanceEvents": [{"eventID":"event-123","occurredAt":"2026-09-23T10:00:00-04:00","action":"corrected","domain":"professional","recordID":"work-style","reason":"\(governanceReason)","beforeVersion":1,"afterVersion":2,"result":"applied"}],
           "optOuts": {"schemaVersion":1,"global":false,"domains":[],"sources":[],"recordTypes":[],"updatedAt":null},
-          "playbooks": [],
-          "coverage": {"professionalCount":\(professionalCount),"personalCount":1,"governanceEventCount":0,"promiseCount":10,"implementedPromiseCount":10,"unresolvedCount":0}
+          "playbooks": [{"playbookID":"playbook-123","title":"Working guide","state":"prepared","updatedAt":"2026-09-23T10:00:00-04:00","audience":"\(playbookAudience)","qaVerdict":"PASS","packageDigest":"\(String(repeating: "b", count: 64))"}],
+          "coverage": {"professionalCount":\(professionalCount),"personalCount":1,"governanceEventCount":1,"promiseCount":10,"implementedPromiseCount":10,"unresolvedCount":0}
         }
         """
         let decoder = JSONDecoder()

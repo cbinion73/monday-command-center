@@ -35,6 +35,12 @@ struct TwinInspectionProjection: Decodable {
             if record.domain == "personal", record.statement != nil { return .personalStatementExposed(record.recordID) }
             if record.containsProhibitedMaterial { return .prohibitedMaterial(record.recordID) }
         }
+        for event in governanceEvents where event.containsProhibitedMaterial {
+            return .prohibitedMaterial(event.eventID)
+        }
+        for playbook in playbooks where playbook.containsProhibitedMaterial {
+            return .prohibitedMaterial(playbook.id)
+        }
         return .current
     }
 
@@ -130,11 +136,7 @@ struct TwinInspectionRecord: Decodable, Identifiable {
     let supersedes: String?
 
     var containsProhibitedMaterial: Bool {
-        let values = [statement, purpose, supersedes].compactMap { $0 } + sourceIDs
-        let prohibited = ["http://", "https://", "file://", "/Users/", "/Volumes/", "Bearer "]
-        return values.contains { value in
-            prohibited.contains(where: value.localizedCaseInsensitiveContains) || value.range(of: #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#, options: [.regularExpression, .caseInsensitive]) != nil
-        }
+        TwinProjectionPrivacy.containsProhibited([statement, purpose, supersedes].compactMap { $0 } + sourceIDs)
     }
 }
 
@@ -149,6 +151,10 @@ struct TwinGovernanceEvent: Decodable, Identifiable {
     let beforeVersion: Int?
     let afterVersion: Int?
     let result: String
+
+    var containsProhibitedMaterial: Bool {
+        TwinProjectionPrivacy.containsProhibited([reason])
+    }
 }
 
 struct TwinOptOuts: Decodable {
@@ -169,6 +175,21 @@ struct TwinPlaybook: Decodable, Identifiable {
     let audience: String?
     let qaVerdict: String?
     let packageDigest: String?
+
+    var containsProhibitedMaterial: Bool {
+        TwinProjectionPrivacy.containsProhibited([title, audience].compactMap { $0 })
+    }
+}
+
+private enum TwinProjectionPrivacy {
+    static func containsProhibited(_ values: [String]) -> Bool {
+        let prohibited = ["http://", "https://", "file://", "/Users/", "/Volumes/", "Bearer "]
+        return values.contains { value in
+            prohibited.contains(where: value.localizedCaseInsensitiveContains)
+                || value.range(of: #"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#, options: [.regularExpression, .caseInsensitive]) != nil
+                || value.range(of: #"(?i)\b(?:api[_-]?key|password|passwd|secret|token)\s*[:=]\s*[^\s,;]+"#, options: .regularExpression) != nil
+        }
+    }
 }
 
 struct TwinCoverage: Decodable {
